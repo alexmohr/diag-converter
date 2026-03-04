@@ -400,7 +400,7 @@ security:
     let lvl1 = security_sc2
         .states
         .iter()
-        .find(|s| s.short_name.contains("1"))
+        .find(|s| s.short_name.contains('1'))
         .unwrap();
     assert_eq!(lvl1.long_name.as_ref().unwrap().value, "1");
 }
@@ -565,7 +565,10 @@ fn test_access_patterns_roundtrip() {
     // extended_write pattern: sessions: [extended], security: [level_01]
     // State names are CDA names: alias ("extendedDiagnosticSession") and Level_N format
     assert_eq!(session_refs.len(), 1);
-    assert_eq!(session_refs[0].in_param_path_short_name, "extendedDiagnosticSession");
+    assert_eq!(
+        session_refs[0].in_param_path_short_name,
+        "extendedDiagnosticSession"
+    );
     assert_eq!(security_refs.len(), 1);
     assert_eq!(security_refs[0].in_param_path_short_name, "Level_1");
 

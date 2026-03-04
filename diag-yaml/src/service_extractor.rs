@@ -160,8 +160,7 @@ pub fn extract_services(services: &[DiagService]) -> YamlServices {
     }
 
     if !dtc_setting_svcs.is_empty() {
-        yaml.control_dtc_setting =
-            Some(extract_dtc_setting_entry(&dtc_setting_svcs));
+        yaml.control_dtc_setting = Some(extract_dtc_setting_entry(&dtc_setting_svcs));
     }
 
     if has_clear_dtc {
@@ -172,8 +171,7 @@ pub fn extract_services(services: &[DiagService]) -> YamlServices {
     }
 
     if !read_dtc_svcs.is_empty() {
-        yaml.read_dtc_information =
-            Some(extract_read_dtc_entry(&read_dtc_svcs));
+        yaml.read_dtc_information = Some(extract_read_dtc_entry(&read_dtc_svcs));
     }
 
     yaml
@@ -274,7 +272,7 @@ fn extract_dtc_setting_entry(services: &[&DiagService]) -> ServiceEntry {
 fn extract_read_dtc_entry(services: &[&DiagService]) -> ServiceEntry {
     let is_default = services.len() == 1
         && services[0].diag_comm.short_name == "FaultMem_ReportDTCByStatusMask"
-        && extract_subfunction(&services[0]) == Some(0x02);
+        && extract_subfunction(services[0]) == Some(0x02);
 
     if is_default {
         ServiceEntry {

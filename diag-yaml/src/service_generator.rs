@@ -191,7 +191,12 @@ impl<'a> ServiceGenerator<'a> {
                 vec![
                     coded_const_param("SID_RQ", 0, 8, "39"),
                     coded_const_param("SUBFUNCTION", 1, 8, &key_byte.to_string()),
-                    value_param("SecurityKey", 2, (level.key_size * 8).max(8), "SecurityAccess_EndOfPduByteArray"),
+                    value_param(
+                        "SecurityKey",
+                        2,
+                        (level.key_size * 8).max(8),
+                        "SecurityAccess_EndOfPduByteArray",
+                    ),
                 ],
                 vec![
                     coded_const_param("SID_PR", 0, 8, "103"),
@@ -241,7 +246,11 @@ impl<'a> ServiceGenerator<'a> {
                 })
                 .collect()
         } else {
-            vec![make("HardReset", 0x01), make("KeyOffOnReset", 0x02), make("SoftReset", 0x03)]
+            vec![
+                make("HardReset", 0x01),
+                make("KeyOffOnReset", 0x02),
+                make("SoftReset", 0x03),
+            ]
         }
     }
 
@@ -649,7 +658,9 @@ fn service_long_name(short_name: &str, semantic: &str) -> Option<String> {
             Some(format!("Communication Control - {readable}"))
         }
         "CONTROL-DTC-SETTING" => {
-            let mode = short_name.strip_prefix("DTC_Setting_Mode_").unwrap_or(short_name);
+            let mode = short_name
+                .strip_prefix("DTC_Setting_Mode_")
+                .unwrap_or(short_name);
             Some(format!("DTC Setting {}", camel_to_words(mode)))
         }
         "CLEAR-DTC" => Some("Clear DTCs".to_string()),
@@ -688,7 +699,9 @@ fn camel_to_words(s: &str) -> String {
                 if j < chars.len() && chars[j].is_lowercase() {
                     // Check if it's just a plural 's' followed by uppercase or end
                     let is_plural_s = chars[j] == 's'
-                        && (j + 1 >= chars.len() || chars[j + 1].is_uppercase() || chars[j + 1] == '_');
+                        && (j + 1 >= chars.len()
+                            || chars[j + 1].is_uppercase()
+                            || chars[j + 1] == '_');
                     if is_plural_s {
                         // Keep entire acronym + 's' as one token (e.g. "DTCs")
                         words.push(' ');
@@ -754,7 +767,10 @@ fn build_service(
     DiagService {
         diag_comm: DiagComm {
             short_name: short_name.to_string(),
-            long_name: service_long_name(short_name, semantic).map(|v| LongName { value: v, ti: String::new() }),
+            long_name: service_long_name(short_name, semantic).map(|v| LongName {
+                value: v,
+                ti: String::new(),
+            }),
             semantic: ir_semantic,
             funct_classes: semantic_to_funct_classes(semantic),
             is_executable: true,
@@ -779,9 +795,15 @@ fn build_service(
 fn coded_const_param(name: &str, byte_pos: u32, bit_size: u32, value: &str) -> Param {
     let semantic = if byte_pos == 0 {
         "SERVICE-ID".to_string()
-    } else if matches!(name,
-        "SubFunction" | "SessionType" | "ResetType" | "ControlType"
-        | "SettingType" | "SUBFUNCTION" | "SecurityAccessType"
+    } else if matches!(
+        name,
+        "SubFunction"
+            | "SessionType"
+            | "ResetType"
+            | "ControlType"
+            | "SettingType"
+            | "SUBFUNCTION"
+            | "SecurityAccessType"
     ) {
         "SUBFUNCTION".to_string()
     } else {
@@ -1037,10 +1059,7 @@ mod tests {
         let generator = ServiceGenerator::new(&svc);
         let services = generator.generate_clear_diagnostic_information();
         assert_eq!(services.len(), 1);
-        assert_eq!(
-            services[0].diag_comm.short_name,
-            "FaultMem_ClearDTCs"
-        );
+        assert_eq!(services[0].diag_comm.short_name, "FaultMem_ClearDTCs");
     }
 
     #[test]

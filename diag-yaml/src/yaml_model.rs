@@ -819,7 +819,10 @@ values:
         let entry: ComParamEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
             ComParamEntry::Full(f) => {
-                assert_eq!(f.cptype, Some(ComParamTypeYaml::Other("uint16".to_string())));
+                assert_eq!(
+                    f.cptype,
+                    Some(ComParamTypeYaml::Other("uint16".to_string()))
+                );
                 assert_eq!(f.unit.as_deref(), Some("ms"));
                 let vals = f.values.unwrap();
                 assert_eq!(vals.len(), 2);

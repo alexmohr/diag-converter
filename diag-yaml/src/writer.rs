@@ -81,7 +81,9 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
 
     if let Some(layer) = layer {
         for svc in &layer.diag_services {
-            if svc.diag_comm.short_name.starts_with("Routine_") || extract_sid_value(svc) == Some(0x31) {
+            if svc.diag_comm.short_name.starts_with("Routine_")
+                || extract_sid_value(svc) == Some(0x31)
+            {
                 let rid = extract_routine_id(svc);
                 let routine = service_to_routine(svc);
                 let key = serde_yaml::Value::Number(serde_yaml::Number::from(rid as u64));
@@ -112,7 +114,7 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
                 });
                 let param_name = data_param_name
                     .filter(|&pn| pn != did_name)
-                    .map(|pn| pn.to_string());
+                    .map(std::string::ToString::to_string);
                 let did = Did {
                     name: did_name.to_string(),
                     param_name,
@@ -715,16 +717,13 @@ fn convert_legacy_comparams(legacy: &LegacyYamlComParams) -> YamlComParams {
             } else {
                 // Spec with metadata (cptype, min, max, etc.) - merge with collected values
                 let values_map = param_values.remove(name);
-                let cptype = spec_val
-                    .get("cptype")
-                    .and_then(|v| v.as_str())
-                    .map(|s| {
-                        if s == "complex" {
-                            ComParamTypeYaml::Complex
-                        } else {
-                            ComParamTypeYaml::Other(s.to_string())
-                        }
-                    });
+                let cptype = spec_val.get("cptype").and_then(|v| v.as_str()).map(|s| {
+                    if s == "complex" {
+                        ComParamTypeYaml::Complex
+                    } else {
+                        ComParamTypeYaml::Other(s.to_string())
+                    }
+                });
                 let unit = spec_val
                     .get("unit")
                     .and_then(|v| v.as_str())
@@ -1116,7 +1115,9 @@ fn extract_state_model_from_state_charts(state_charts: &[StateChart]) -> Option<
 fn extract_security_from_state_charts(
     state_charts: &[StateChart],
 ) -> Option<BTreeMap<String, SecurityLevel>> {
-    let sc = state_charts.iter().find(|sc| sc.short_name == "SecurityAccess")?;
+    let sc = state_charts
+        .iter()
+        .find(|sc| sc.short_name == "SecurityAccess")?;
     if sc.states.is_empty() {
         return None;
     }

@@ -367,17 +367,14 @@ fn cda_dop_name_for_type(yaml_type: &YamlType, fallback: &str) -> String {
     if let Some(ref name) = yaml_type.dop_name {
         return name.clone();
     }
-    let is_identical = yaml_type.entries.is_none()
-        && yaml_type.scale.is_none()
-        && yaml_type.offset.is_none();
+    let is_identical =
+        yaml_type.entries.is_none() && yaml_type.scale.is_none() && yaml_type.offset.is_none();
     if is_identical {
         match yaml_type.base.as_str() {
             "u8" => return "IDENTICAL_UINT_8".into(),
             "u16" => return "IDENTICAL_UINT_16".into(),
             "u32" => {
-                let bits = yaml_type
-                    .bit_length
-                    .unwrap_or(32);
+                let bits = yaml_type.bit_length.unwrap_or(32);
                 return format!("IDENTICAL_UINT_{bits}");
             }
             _ => {}
@@ -561,10 +558,9 @@ fn build_compu_method(yaml_type: &YamlType) -> CompuMethod {
 /// Create a ReadDataByIdentifier (0x22) service from a DID definition.
 fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagService {
     let (yaml_type, _type_key) = resolve_did_type(&did.did_type, registry);
-    let dop_name = yaml_type.as_ref().map_or_else(
-        || did.name.clone(),
-        |t| cda_dop_name_for_type(t, &did.name),
-    );
+    let dop_name = yaml_type
+        .as_ref()
+        .map_or_else(|| did.name.clone(), |t| cda_dop_name_for_type(t, &did.name));
     let data_param_name = did.param_name.as_deref().unwrap_or(&did.name);
     let dop = yaml_type.as_ref().map_or_else(
         || Dop {
@@ -607,7 +603,9 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
             short_name: format!("{}_Read", did.name),
             long_name: None,
             semantic: String::new(),
-            funct_classes: vec![FunctClass { short_name: "Ident".into() }],
+            funct_classes: vec![FunctClass {
+                short_name: "Ident".into(),
+            }],
             sdgs: did_sdgs,
             diag_class_type: DiagClassType::StartComm,
             pre_condition_state_refs: vec![],
@@ -712,10 +710,9 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
 /// Create a WriteDataByIdentifier (0x2E) service from a DID definition.
 fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagService {
     let (yaml_type, _type_key) = resolve_did_type(&did.did_type, registry);
-    let dop_name = yaml_type.as_ref().map_or_else(
-        || did.name.clone(),
-        |t| cda_dop_name_for_type(t, &did.name),
-    );
+    let dop_name = yaml_type
+        .as_ref()
+        .map_or_else(|| did.name.clone(), |t| cda_dop_name_for_type(t, &did.name));
     let data_param_name = did.param_name.as_deref().unwrap_or(&did.name);
     let dop = yaml_type.as_ref().map_or_else(
         || Dop {
@@ -732,7 +729,9 @@ fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> Diag
             short_name: format!("{}_Write", did.name),
             long_name: None,
             semantic: String::new(),
-            funct_classes: vec![FunctClass { short_name: "Ident".into() }],
+            funct_classes: vec![FunctClass {
+                short_name: "Ident".into(),
+            }],
             sdgs: None,
             diag_class_type: DiagClassType::StartComm,
             pre_condition_state_refs: vec![],
@@ -1354,7 +1353,10 @@ fn parse_sessions_to_state_chart(
         .iter()
         .map(|(key, session)| {
             let id = yaml_value_to_u64(&session.id);
-            let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+            let cda_name = key_to_cda
+                .get(key.as_str())
+                .cloned()
+                .unwrap_or_else(|| key.clone());
             State {
                 short_name: cda_name,
                 long_name: Some(LongName {
@@ -1380,9 +1382,15 @@ fn parse_sessions_to_state_chart(
         .map(|transitions| {
             let mut result = Vec::new();
             for (from, targets) in transitions {
-                let cda_from = key_to_cda.get(from.as_str()).cloned().unwrap_or_else(|| from.clone());
+                let cda_from = key_to_cda
+                    .get(from.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| from.clone());
                 for to in targets {
-                    let cda_to = key_to_cda.get(to.as_str()).cloned().unwrap_or_else(|| to.clone());
+                    let cda_to = key_to_cda
+                        .get(to.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| to.clone());
                     result.push(StateTransition {
                         short_name: format!("{cda_from}_to_{cda_to}"),
                         source_short_name_ref: cda_from.clone(),
@@ -1428,7 +1436,10 @@ fn parse_security_to_state_chart(security: &BTreeMap<String, SecurityLevel>) -> 
         .collect();
 
     for (key, level) in security {
-        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+        let cda_name = key_to_cda
+            .get(key.as_str())
+            .cloned()
+            .unwrap_or_else(|| key.clone());
         states.push(State {
             short_name: cda_name,
             long_name: Some(LongName {
@@ -1444,16 +1455,22 @@ fn parse_security_to_state_chart(security: &BTreeMap<String, SecurityLevel>) -> 
         source_short_name_ref: "Locked".into(),
         target_short_name_ref: "Locked".into(),
     }];
-    for (key, _level) in security {
-        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+    for key in security.keys() {
+        let cda_name = key_to_cda
+            .get(key.as_str())
+            .cloned()
+            .unwrap_or_else(|| key.clone());
         transitions.push(StateTransition {
             short_name: format!("Locked_to_{cda_name}"),
             source_short_name_ref: "Locked".into(),
             target_short_name_ref: cda_name.clone(),
         });
     }
-    for (key, _level) in security {
-        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+    for key in security.keys() {
+        let cda_name = key_to_cda
+            .get(key.as_str())
+            .cloned()
+            .unwrap_or_else(|| key.clone());
         transitions.push(StateTransition {
             short_name: format!("{cda_name}_to_Locked"),
             source_short_name_ref: cda_name,
@@ -1766,7 +1783,12 @@ fn parse_detect_to_matching_parameter(
     let out_param = diag_service
         .pos_responses
         .first()
-        .and_then(|resp| resp.params.iter().find(|p| p.short_name == param_path).cloned())
+        .and_then(|resp| {
+            resp.params
+                .iter()
+                .find(|p| p.short_name == param_path)
+                .cloned()
+        })
         .unwrap_or_else(|| Param {
             short_name: param_path.to_string(),
             ..Default::default()
@@ -1865,7 +1887,7 @@ fn make_comparam_dop(dop_def: Option<&ComParamDopDef>) -> Option<Dop> {
 
 /// Parse usage string to ComParamUsage enum.
 fn parse_comparam_usage(usage: Option<&str>) -> ComParamUsage {
-    match usage.map(|s| s.to_ascii_lowercase()).as_deref() {
+    match usage.map(str::to_ascii_lowercase).as_deref() {
         Some("tester") => ComParamUsage::Tester,
         Some("ecu_software") | Some("ecusoftware") => ComParamUsage::EcuSoftware,
         Some("application") => ComParamUsage::Application,
@@ -1944,7 +1966,10 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
                 });
             }
             ComParamEntry::Full(full) => {
-                let is_complex = full.cptype.as_ref().map_or(false, |t| t.is_complex());
+                let is_complex = full
+                    .cptype
+                    .as_ref()
+                    .is_some_and(super::yaml_model::ComParamTypeYaml::is_complex);
 
                 if let Some(values) = &full.values {
                     for (proto_name, val) in values {
@@ -1969,7 +1994,7 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
                                             SimpleOrComplexValue::Simple(sv) => {
                                                 Some(sv.value.clone())
                                             }
-                                            _ => None,
+                                            SimpleOrComplexValue::Complex(_) => None,
                                         })
                                         .collect()
                                 });
