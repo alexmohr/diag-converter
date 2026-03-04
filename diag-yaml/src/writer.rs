@@ -705,6 +705,10 @@ fn convert_legacy_comparams(legacy: &LegacyYamlComParams) -> YamlComParams {
                             max: None,
                             allowed_values: None,
                             values: Some(values),
+                            dop: None,
+                            children: None,
+                            param_class: None,
+                            usage: None,
                         }),
                     );
                 }
@@ -714,7 +718,13 @@ fn convert_legacy_comparams(legacy: &LegacyYamlComParams) -> YamlComParams {
                 let cptype = spec_val
                     .get("cptype")
                     .and_then(|v| v.as_str())
-                    .map(String::from);
+                    .map(|s| {
+                        if s == "complex" {
+                            ComParamTypeYaml::Complex
+                        } else {
+                            ComParamTypeYaml::Other(s.to_string())
+                        }
+                    });
                 let unit = spec_val
                     .get("unit")
                     .and_then(|v| v.as_str())
@@ -738,6 +748,10 @@ fn convert_legacy_comparams(legacy: &LegacyYamlComParams) -> YamlComParams {
                         max,
                         allowed_values: None,
                         values: values_map,
+                        dop: None,
+                        children: None,
+                        param_class: None,
+                        usage: None,
                     }),
                 );
             }
@@ -760,6 +774,10 @@ fn convert_legacy_comparams(legacy: &LegacyYamlComParams) -> YamlComParams {
                     max: None,
                     allowed_values: None,
                     values: Some(values),
+                    dop: None,
+                    children: None,
+                    param_class: None,
+                    usage: None,
                 })
             }
         });

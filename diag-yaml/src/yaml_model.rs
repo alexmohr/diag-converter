@@ -182,10 +182,28 @@ pub enum ComParamEntry {
     Simple(serde_yaml::Value),
 }
 
+/// Communication parameter type - distinguishes complex comparams from regular ones.
+/// Other values (like "uint16", "uint8") describe data types and are treated as regular.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComParamTypeYaml {
+    /// Complex comparam with nested values
+    Complex,
+    /// Any other type string (data type descriptors like "uint16", "uint8")
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl ComParamTypeYaml {
+    pub fn is_complex(&self) -> bool {
+        matches!(self, ComParamTypeYaml::Complex)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComParamFull {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cptype: Option<String>,
+    pub cptype: Option<ComParamTypeYaml>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,6 +218,39 @@ pub struct ComParamFull {
     pub allowed_values: Option<Vec<serde_yaml::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<BTreeMap<String, serde_yaml::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dop: Option<ComParamDopDef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<ComParamChild>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<String>,
+}
+
+/// Child comparam definition for complex comparams.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComParamChild {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dop: Option<ComParamDopDef>,
+}
+
+/// DOP (Data Object Property) definition for comparams.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComParamDopDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(alias = "type", skip_serializing_if = "Option::is_none")]
+    pub base_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bit_length: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
 }
 
 // --- Sessions ---
@@ -768,7 +819,7 @@ values:
         let entry: ComParamEntry = serde_yaml::from_str(yaml).unwrap();
         match entry {
             ComParamEntry::Full(f) => {
-                assert_eq!(f.cptype.as_deref(), Some("uint16"));
+                assert_eq!(f.cptype, Some(ComParamTypeYaml::Other("uint16".to_string())));
                 assert_eq!(f.unit.as_deref(), Some("ms"));
                 let vals = f.values.unwrap();
                 assert_eq!(vals.len(), 2);

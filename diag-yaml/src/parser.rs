@@ -281,6 +281,27 @@ fn yaml_to_ir(doc: &YamlDocument) -> Result<DiagDatabase, YamlParseError> {
     // Build com_param_refs from YAML comparams section
     let com_param_refs = parse_comparams(doc);
 
+    let memory = doc.memory.as_ref().map(parse_memory_config);
+
+    // Build additional variants from variants.definitions FIRST
+    // (so we can reference diag_services before moving it into the main variant)
+    let mut additional_variants = Vec::new();
+    if let Some(yaml_variants) = &doc.variants {
+        if let Some(definitions) = &yaml_variants.definitions {
+            for (vname, vdef) in definitions {
+                let ecu_variant = parse_variant_definition(
+                    vname,
+                    vdef,
+                    &ecu_name,
+                    doc.sessions.as_ref(),
+                    doc.security.as_ref(),
+                    &diag_services,
+                );
+                additional_variants.push(ecu_variant);
+            }
+        }
+    }
+
     // Build the main variant containing all services
     let variant = Variant {
         diag_layer: DiagLayer {
@@ -299,24 +320,9 @@ fn yaml_to_ir(doc: &YamlDocument) -> Result<DiagDatabase, YamlParseError> {
         parent_refs: vec![],
     };
 
-    let memory = doc.memory.as_ref().map(parse_memory_config);
-
-    // Build additional variants from variants.definitions
+    // Combine main variant with additional variants
     let mut variants = vec![variant];
-    if let Some(yaml_variants) = &doc.variants {
-        if let Some(definitions) = &yaml_variants.definitions {
-            for (vname, vdef) in definitions {
-                let ecu_variant = parse_variant_definition(
-                    vname,
-                    vdef,
-                    &ecu_name,
-                    doc.sessions.as_ref(),
-                    doc.security.as_ref(),
-                );
-                variants.push(ecu_variant);
-            }
-        }
-    }
+    variants.extend(additional_variants);
 
     Ok(DiagDatabase {
         version,
@@ -1498,10 +1504,11 @@ fn parse_variant_definition(
     base_variant_name: &str,
     sessions: Option<&BTreeMap<String, Session>>,
     security: Option<&BTreeMap<String, SecurityLevel>>,
+    base_services: &[DiagService],
 ) -> Variant {
     // Build matching parameters from detect section
     let variant_patterns = if let Some(detect) = &vdef.detect {
-        let mp = parse_detect_to_matching_parameter(detect);
+        let mp = parse_detect_to_matching_parameter(detect, base_services);
         if let Some(mp) = mp {
             vec![VariantPattern {
                 matching_parameters: vec![mp],
@@ -1725,7 +1732,10 @@ fn apply_access_pattern(
     }
 }
 
-fn parse_detect_to_matching_parameter(detect: &serde_yaml::Value) -> Option<MatchingParameter> {
+fn parse_detect_to_matching_parameter(
+    detect: &serde_yaml::Value,
+    base_services: &[DiagService],
+) -> Option<MatchingParameter> {
     let rpm = detect.get("response_param_match")?;
     let service_name = rpm.get("service")?.as_str()?;
     let param_path = rpm.get("param_path")?.as_str()?;
@@ -1736,21 +1746,162 @@ fn parse_detect_to_matching_parameter(detect: &serde_yaml::Value) -> Option<Matc
         _ => format!("{expected:?}"),
     };
 
-    Some(MatchingParameter {
-        expected_value: expected_str,
-        diag_service: Box::new(DiagService {
-            diag_comm: DiagComm {
-                short_name: service_name.to_string(),
+    // Look up the actual service from the base services list
+    let diag_service = base_services
+        .iter()
+        .find(|svc| svc.diag_comm.short_name == service_name)
+        .cloned()
+        .unwrap_or_else(|| {
+            // Fallback to stub if service not found
+            DiagService {
+                diag_comm: DiagComm {
+                    short_name: service_name.to_string(),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        }),
-        out_param: Box::new(Param {
+            }
+        });
+
+    // Find the output parameter in the service's positive response
+    let out_param = diag_service
+        .pos_responses
+        .first()
+        .and_then(|resp| resp.params.iter().find(|p| p.short_name == param_path).cloned())
+        .unwrap_or_else(|| Param {
             short_name: param_path.to_string(),
             ..Default::default()
-        }),
+        });
+
+    Some(MatchingParameter {
+        expected_value: expected_str,
+        diag_service: Box::new(diag_service),
+        out_param: Box::new(out_param),
         use_physical_addressing: None,
     })
+}
+
+/// Create a DOP for a comparam from an explicit YAML definition.
+fn make_comparam_dop(dop_def: Option<&ComParamDopDef>) -> Option<Dop> {
+    let def = dop_def?;
+
+    let base = def.base_type.as_deref()?;
+    let bits = def
+        .bit_length
+        .unwrap_or_else(|| default_bit_length(base).unwrap_or(32));
+
+    let internal_constr = if def.min.is_some() || def.max.is_some() {
+        Some(InternalConstr {
+            lower_limit: def.min.map(|v| Limit {
+                value: v.to_string(),
+                interval_type: IntervalType::Closed,
+            }),
+            upper_limit: def.max.map(|v| Limit {
+                value: v.to_string(),
+                interval_type: IntervalType::Closed,
+            }),
+            scale_constrs: vec![],
+        })
+    } else {
+        None
+    };
+
+    let name = def.name.clone().unwrap_or_else(|| {
+        let type_part = match base {
+            "u8" | "u16" | "u32" | "u64" => "A_UINT32",
+            "s8" | "s16" | "s32" | "s64" => "A_INT32",
+            "f32" | "f64" => "A_FLOAT64",
+            "string" | "ascii" | "utf8" => "A_ASCIISTRING",
+            "bytes" => "A_BYTEFIELD",
+            _ => "A_UINT32",
+        };
+        match (&def.min, &def.max) {
+            (Some(min), Some(max)) => {
+                let min_str = min.to_string().replace('-', "NEG").replace('.', "_");
+                let max_str = max.to_string().replace('-', "NEG").replace('.', "_");
+                format!("IDENTICAL_{type_part}_CONSTR_{min_str}_{max_str}")
+            }
+            (Some(min), None) => {
+                let min_str = min.to_string().replace('-', "NEG").replace('.', "_");
+                format!("IDENTICAL_{type_part}_CONSTR_{min_str}_INF")
+            }
+            (None, Some(max)) => {
+                let max_str = max.to_string().replace('-', "NEG").replace('.', "_");
+                format!("IDENTICAL_{type_part}_CONSTR_NEGINF_{max_str}")
+            }
+            (None, None) => format!("IDENTICAL_{type_part}"),
+        }
+    });
+
+    let (data_type, _) = base_type_to_data_type(base);
+
+    Some(Dop {
+        dop_type: DopType::Regular,
+        short_name: name,
+        sdgs: None,
+        specific_data: Some(DopData::NormalDop {
+            compu_method: Some(CompuMethod {
+                category: CompuCategory::Identical,
+                internal_to_phys: None,
+                phys_to_internal: None,
+            }),
+            diag_coded_type: Some(DiagCodedType {
+                type_name: DiagCodedTypeName::StandardLengthType,
+                base_type_encoding: String::new(),
+                base_data_type: data_type,
+                is_high_low_byte_order: true,
+                specific_data: Some(DiagCodedTypeData::StandardLength {
+                    bit_length: bits,
+                    bit_mask: vec![],
+                    condensed: false,
+                }),
+            }),
+            physical_type: None,
+            internal_constr,
+            unit_ref: None,
+            phys_constr: None,
+        }),
+    })
+}
+
+/// Parse usage string to ComParamUsage enum.
+fn parse_comparam_usage(usage: Option<&str>) -> ComParamUsage {
+    match usage.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("tester") => ComParamUsage::Tester,
+        Some("ecu_software") | Some("ecusoftware") => ComParamUsage::EcuSoftware,
+        Some("application") => ComParamUsage::Application,
+        _ => ComParamUsage::EcuComm,
+    }
+}
+
+/// Build child ComParams from YAML children definitions for complex comparams.
+fn build_complex_comparam_children(
+    yaml_children: Option<&[ComParamChild]>,
+    values: Option<&[String]>,
+) -> Vec<ComParam> {
+    let Some(children) = yaml_children else {
+        return vec![];
+    };
+
+    children
+        .iter()
+        .enumerate()
+        .map(|(idx, child)| {
+            let value = values.and_then(|v| v.get(idx)).cloned().unwrap_or_default();
+            ComParam {
+                com_param_type: ComParamType::Regular,
+                short_name: child.name.clone(),
+                long_name: None,
+                param_class: child.param_class.clone().unwrap_or_default(),
+                cp_type: ComParamStandardisationLevel::Standard,
+                display_level: None,
+                cp_usage: ComParamUsage::EcuComm,
+                specific_data: Some(ComParamSpecificData::Regular {
+                    physical_default_value: value,
+                    dop: make_comparam_dop(child.dop.as_ref()).map(Box::new),
+                }),
+            }
+        })
+        .collect()
 }
 
 /// Parse YAML `comparams` section into IR `ComParamRef` entries.
@@ -1771,7 +1922,9 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
             ComParamEntry::Simple(val) => {
                 let value_str = yaml_value_to_string(val);
                 refs.push(ComParamRef {
-                    simple_value: Some(SimpleValue { value: value_str }),
+                    simple_value: Some(SimpleValue {
+                        value: value_str.clone(),
+                    }),
                     complex_value: None,
                     com_param: Some(Box::new(ComParam {
                         com_param_type: ComParamType::Regular,
@@ -1781,13 +1934,18 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
                         cp_type: ComParamStandardisationLevel::Standard,
                         display_level: None,
                         cp_usage: ComParamUsage::EcuComm,
-                        specific_data: None,
+                        specific_data: Some(ComParamSpecificData::Regular {
+                            physical_default_value: value_str,
+                            dop: None,
+                        }),
                     })),
                     protocol: None,
                     prot_stack: None,
                 });
             }
             ComParamEntry::Full(full) => {
+                let is_complex = full.cptype.as_ref().map_or(false, |t| t.is_complex());
+
                 if let Some(values) = &full.values {
                     for (proto_name, val) in values {
                         let (simple_value, complex_value) = parse_comparam_value(val);
@@ -1802,18 +1960,59 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
                             parent_refs: vec![],
                         };
 
+                        let (com_param_type, specific_data) = if is_complex {
+                            let child_values: Option<Vec<String>> =
+                                complex_value.as_ref().map(|cv| {
+                                    cv.entries
+                                        .iter()
+                                        .filter_map(|e| match e {
+                                            SimpleOrComplexValue::Simple(sv) => {
+                                                Some(sv.value.clone())
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect()
+                                });
+                            (
+                                ComParamType::Complex,
+                                Some(ComParamSpecificData::Complex {
+                                    com_params: build_complex_comparam_children(
+                                        full.children.as_deref(),
+                                        child_values.as_deref(),
+                                    ),
+                                    complex_physical_default_values: complex_value
+                                        .clone()
+                                        .map(|cv| vec![cv])
+                                        .unwrap_or_default(),
+                                    allow_multiple_values: true,
+                                }),
+                            )
+                        } else {
+                            let physical_default_value = simple_value
+                                .as_ref()
+                                .map(|sv| sv.value.clone())
+                                .unwrap_or_default();
+                            (
+                                ComParamType::Regular,
+                                Some(ComParamSpecificData::Regular {
+                                    physical_default_value,
+                                    dop: make_comparam_dop(full.dop.as_ref()).map(Box::new),
+                                }),
+                            )
+                        };
+
                         refs.push(ComParamRef {
                             simple_value,
                             complex_value,
                             com_param: Some(Box::new(ComParam {
-                                com_param_type: ComParamType::Regular,
+                                com_param_type,
                                 short_name: param_name.clone(),
                                 long_name: None,
-                                param_class: String::new(),
+                                param_class: full.param_class.clone().unwrap_or_default(),
                                 cp_type: ComParamStandardisationLevel::Standard,
                                 display_level: None,
-                                cp_usage: ComParamUsage::EcuComm,
-                                specific_data: None,
+                                cp_usage: parse_comparam_usage(full.usage.as_deref()),
+                                specific_data,
                             })),
                             protocol: Some(Box::new(protocol)),
                             prot_stack: None,
@@ -1821,18 +2020,41 @@ fn parse_comparams(doc: &YamlDocument) -> Vec<ComParamRef> {
                     }
                 } else if let Some(default_val) = &full.default {
                     let value_str = yaml_value_to_string(default_val);
+
+                    let (com_param_type, specific_data) = if is_complex {
+                        (
+                            ComParamType::Complex,
+                            Some(ComParamSpecificData::Complex {
+                                com_params: build_complex_comparam_children(
+                                    full.children.as_deref(),
+                                    None,
+                                ),
+                                complex_physical_default_values: vec![],
+                                allow_multiple_values: true,
+                            }),
+                        )
+                    } else {
+                        (
+                            ComParamType::Regular,
+                            Some(ComParamSpecificData::Regular {
+                                physical_default_value: value_str.clone(),
+                                dop: make_comparam_dop(full.dop.as_ref()).map(Box::new),
+                            }),
+                        )
+                    };
+
                     refs.push(ComParamRef {
                         simple_value: Some(SimpleValue { value: value_str }),
                         complex_value: None,
                         com_param: Some(Box::new(ComParam {
-                            com_param_type: ComParamType::Regular,
+                            com_param_type,
                             short_name: param_name.clone(),
                             long_name: None,
-                            param_class: String::new(),
+                            param_class: full.param_class.clone().unwrap_or_default(),
                             cp_type: ComParamStandardisationLevel::Standard,
                             display_level: None,
-                            cp_usage: ComParamUsage::EcuComm,
-                            specific_data: None,
+                            cp_usage: parse_comparam_usage(full.usage.as_deref()),
+                            specific_data,
                         })),
                         protocol: None,
                         prot_stack: None,

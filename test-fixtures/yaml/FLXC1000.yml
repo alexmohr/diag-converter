@@ -46,17 +46,41 @@ ecu:
 # -----------------------------------------------------------------------------
 comparams:
   CP_DoIPLogicalGatewayAddress:
+    param_class: COM
+    usage: ECU_COMM
+    dop:
+      base_type: u32
+      min: 0
+      max: 65535
     values:
       UDS_Ethernet_DoIP: "4096"
       UDS_Ethernet_DoIP_DOBT: "4096"
 
   CP_DoIPLogicalFunctionalAddress:
+    param_class: COM
+    usage: ECU_COMM
+    dop:
+      base_type: u32
+      min: 0
+      max: 65535
     values:
       UDS_Ethernet_DoIP: "65535"
       UDS_Ethernet_DoIP_DOBT: "65535"
 
   CP_UniqueRespIdTable:
     cptype: complex
+    param_class: UNIQUE_ID
+    usage: ECU_COMM
+    children:
+      - name: CP_DoIPLogicalEcuAddress
+        param_class: UNIQUE_ID
+        dop: { base_type: u32, min: 0, max: 65535 }
+      - name: CP_DoIPSecondaryLogicalECUResponseAddress
+        param_class: UNIQUE_ID
+        dop: { base_type: u32, min: 0, max: 65535 }
+      - name: CP_ECULayerShortName
+        param_class: UNIQUE_ID
+        dop: { base_type: string }
     values:
       UDS_Ethernet_DoIP: ["4096", "0", "FLXC1000"]
       UDS_Ethernet_DoIP_DOBT: ["4096", "0", "FLXC1000"]
