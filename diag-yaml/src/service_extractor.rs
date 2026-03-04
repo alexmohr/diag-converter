@@ -15,7 +15,8 @@
 //!   state charts (with seed_request/key_send bytes enriched from IR services).
 //! - **ECUReset, Authentication, CommunicationControl**: subfunctions are reconstructed
 //!   from service names since these have no standalone writer sections.
-//! - **ControlDTCSetting**: only `enabled: true` - generator always produces on/off.
+//! - **ControlDTCSetting, ReadDTCInformation**: subfunctions are reconstructed
+//!   from service names. If they match the defaults, `subfunctions: None` is emitted.
 //!
 //! ## Known limitations
 //!
@@ -36,7 +37,7 @@ pub fn extract_sid(svc: &DiagService) -> Option<u8> {
     let sid_param = request
         .params
         .iter()
-        .find(|p| p.short_name == "SID" && p.param_type == ParamType::CodedConst)?;
+        .find(|p| p.short_name == "SID_RQ" && p.param_type == ParamType::CodedConst)?;
     match &sid_param.specific_data {
         Some(ParamData::CodedConst { coded_value, .. }) => parse_hex_or_decimal(coded_value),
         _ => None,
@@ -87,80 +88,27 @@ pub fn extract_services(services: &[DiagService]) -> YamlServices {
     let mut has_download = false;
     let mut has_upload = false;
     let mut has_tester_present = false;
-    let mut has_dtc_setting = false;
+    let mut dtc_setting_svcs = Vec::new();
     let mut has_clear_dtc = false;
-    let mut has_read_dtc = false;
+    let mut read_dtc_svcs = Vec::new();
 
     for svc in services {
-        // First try semantic match (reliable for YAML-originated services)
-        let classified = match svc.diag_comm.semantic.as_str() {
-            "SESSION" => {
-                session_svcs.push(svc);
-                true
-            }
-            "SECURITY-ACCESS" => {
-                has_security = true;
-                true
-            }
-            "ECU-RESET" => {
-                reset_svcs.push(svc);
-                true
-            }
-            "AUTHENTICATION" => {
-                auth_svcs.push(svc);
-                true
-            }
-            "COMMUNICATION-CONTROL" => {
-                comm_svcs.push(svc);
-                true
-            }
-            "DOWNLOAD" => {
-                has_download = true;
-                true
-            }
-            "UPLOAD" => {
-                has_upload = true;
-                true
-            }
-            "TESTING" => {
-                has_tester_present = true;
-                true
-            }
-            "CONTROL-DTC-SETTING" => {
-                has_dtc_setting = true;
-                true
-            }
-            "CLEAR-DTC" => {
-                has_clear_dtc = true;
-                true
-            }
-            "READ-DTC-INFO" => {
-                has_read_dtc = true;
-                true
-            }
-            "DATA-IDENT" | "ROUTINE" | "IO-CONTROL" => true,
-            _ => false,
-        };
-
-        // Fallback: detect by SID for ODX-originated services
-        if !classified {
-            if let Some(sid) = extract_sid(svc) {
-                match sid {
-                    0x10 => session_svcs.push(svc),
-                    0x11 => reset_svcs.push(svc),
-                    0x27 => has_security = true,
-                    0x28 => comm_svcs.push(svc),
-                    0x29 => auth_svcs.push(svc),
-                    0x34 => has_download = true,
-                    0x35 => has_upload = true,
-                    0x36 | 0x37 => has_download = true,
-                    0x3E => has_tester_present = true,
-                    0x85 => has_dtc_setting = true,
-                    0x14 => has_clear_dtc = true,
-                    0x19 => has_read_dtc = true,
-                    0x22 | 0x2E | 0x2F | 0x31 => {} // DID/IO/routine
-                    _ => {}
-                }
+        if let Some(sid) = extract_sid(svc) {
+            match sid {
+                0x10 => session_svcs.push(svc),
+                0x11 => reset_svcs.push(svc),
+                0x27 => has_security = true,
+                0x28 => comm_svcs.push(svc),
+                0x29 => auth_svcs.push(svc),
+                0x34 => has_download = true,
+                0x35 => has_upload = true,
+                0x36 | 0x37 => has_download = true,
+                0x3E => has_tester_present = true,
+                0x85 => dtc_setting_svcs.push(svc),
+                0x14 => has_clear_dtc = true,
+                0x19 => read_dtc_svcs.push(svc),
+                0x22 | 0x2E | 0x2F | 0x31 => {} // DID/IO/routine
+                _ => {}
             }
         }
     }
@@ -211,11 +159,9 @@ pub fn extract_services(services: &[DiagService]) -> YamlServices {
         });
     }
 
-    if has_dtc_setting {
-        yaml.control_dtc_setting = Some(ServiceEntry {
-            enabled: true,
-            ..Default::default()
-        });
+    if !dtc_setting_svcs.is_empty() {
+        yaml.control_dtc_setting =
+            Some(extract_dtc_setting_entry(&dtc_setting_svcs));
     }
 
     if has_clear_dtc {
@@ -225,11 +171,9 @@ pub fn extract_services(services: &[DiagService]) -> YamlServices {
         });
     }
 
-    if has_read_dtc {
-        yaml.read_dtc_information = Some(ServiceEntry {
-            enabled: true,
-            ..Default::default()
-        });
+    if !read_dtc_svcs.is_empty() {
+        yaml.read_dtc_information =
+            Some(extract_read_dtc_entry(&read_dtc_svcs));
     }
 
     yaml
@@ -296,6 +240,52 @@ fn extract_comm_control_entry(services: &[&DiagService]) -> ServiceEntry {
     }
 }
 
+/// Default ControlDTCSetting subfunctions from service_generator.rs.
+const DEFAULT_DTC_SETTING_SUBTYPES: &[(&str, u8)] = &[("On", 0x01), ("Off", 0x02)];
+
+/// Build a ControlDTCSetting ServiceEntry.
+///
+/// If the services match the default On/Off pair exactly, emit `subfunctions: None`.
+/// Otherwise reconstruct explicit subfunctions from the service names.
+fn extract_dtc_setting_entry(services: &[&DiagService]) -> ServiceEntry {
+    let is_default = services.len() == DEFAULT_DTC_SETTING_SUBTYPES.len()
+        && DEFAULT_DTC_SETTING_SUBTYPES.iter().all(|(name, sf_byte)| {
+            let expected_name = format!("DTC_Setting_Mode_{name}");
+            services.iter().any(|svc| {
+                svc.diag_comm.short_name == expected_name
+                    && extract_subfunction(svc) == Some(*sf_byte)
+            })
+        });
+
+    if is_default {
+        ServiceEntry {
+            enabled: true,
+            ..Default::default()
+        }
+    } else {
+        extract_subfunction_entry(services, "DTC_Setting_Mode_")
+    }
+}
+
+/// Build a ReadDTCInformation ServiceEntry.
+///
+/// If only the default ReportDTCByStatusMask(0x02) is present, emit `subfunctions: None`.
+/// Otherwise reconstruct explicit subfunctions from the service names.
+fn extract_read_dtc_entry(services: &[&DiagService]) -> ServiceEntry {
+    let is_default = services.len() == 1
+        && services[0].diag_comm.short_name == "FaultMem_ReportDTCByStatusMask"
+        && extract_subfunction(&services[0]) == Some(0x02);
+
+    if is_default {
+        ServiceEntry {
+            enabled: true,
+            ..Default::default()
+        }
+    } else {
+        extract_subfunction_entry(services, "FaultMem_")
+    }
+}
+
 /// Build a ServiceEntry with subfunctions extracted from service names.
 ///
 /// Supports both prefix stripping (e.g., `Authentication_` -> `Deauthenticate`)
@@ -348,7 +338,7 @@ mod tests {
             },
             request: Some(Request {
                 params: vec![Param {
-                    short_name: "SID".to_string(),
+                    short_name: "SID_RQ".to_string(),
                     param_type: ParamType::CodedConst,
                     byte_position: Some(0),
                     bit_position: Some(0),
@@ -382,7 +372,7 @@ mod tests {
             request: Some(Request {
                 params: vec![
                     Param {
-                        short_name: "SID".to_string(),
+                        short_name: "SID_RQ".to_string(),
                         param_type: ParamType::CodedConst,
                         byte_position: Some(0),
                         bit_position: Some(0),
@@ -641,7 +631,7 @@ mod tests {
             request: Some(Request {
                 params: vec![
                     Param {
-                        short_name: "SID".to_string(),
+                        short_name: "SID_RQ".to_string(),
                         param_type: ParamType::CodedConst,
                         byte_position: Some(0),
                         bit_position: Some(0),

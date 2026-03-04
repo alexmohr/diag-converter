@@ -345,18 +345,18 @@ security:
     let session_sc = layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SESSION")
+        .find(|sc| sc.short_name == "Session")
         .unwrap();
     assert_eq!(session_sc.states.len(), 3);
-    assert_eq!(session_sc.start_state_short_name_ref, "default");
-    assert_eq!(session_sc.state_transitions.len(), 3); // default->extended, default->programming, extended->default
+    assert_eq!(session_sc.start_state_short_name_ref, "DS"); // alias for "default"
+    assert_eq!(session_sc.state_transitions.len(), 3); // DS->EXTDS, DS->Programming, EXTDS->DS
 
     let security_sc = layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SECURITY")
+        .find(|sc| sc.short_name == "SecurityAccess")
         .unwrap();
-    assert_eq!(security_sc.states.len(), 2);
+    assert_eq!(security_sc.states.len(), 3); // Locked + Level_1 + Level_2
 
     // Roundtrip
     let yaml_out = write_yaml(&db).unwrap();
@@ -368,7 +368,7 @@ security:
     let session_sc2 = layer2
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SESSION")
+        .find(|sc| sc.short_name == "Session")
         .unwrap();
     assert_eq!(session_sc.states.len(), session_sc2.states.len());
     assert_eq!(
@@ -380,27 +380,27 @@ security:
         session_sc2.state_transitions.len()
     );
 
-    // Verify session IDs survived
+    // Verify session IDs survived - state names are CDA names (alias or capitalized key)
     let ext_state = session_sc2
         .states
         .iter()
-        .find(|s| s.short_name == "extended")
+        .find(|s| s.short_name == "EXTDS")
         .unwrap();
     assert_eq!(ext_state.long_name.as_ref().unwrap().value, "3");
-    assert_eq!(ext_state.long_name.as_ref().unwrap().ti, "EXTDS");
+    assert_eq!(ext_state.long_name.as_ref().unwrap().ti, "extended"); // YAML key stored in ti
 
     let security_sc2 = layer2
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SECURITY")
+        .find(|sc| sc.short_name == "SecurityAccess")
         .unwrap();
     assert_eq!(security_sc.states.len(), security_sc2.states.len());
 
-    // Verify security levels survived
+    // Verify security levels survived - security states use "Level_N" CDA naming
     let lvl1 = security_sc2
         .states
         .iter()
-        .find(|s| s.short_name == "level_1")
+        .find(|s| s.short_name.contains("1"))
         .unwrap();
     assert_eq!(lvl1.long_name.as_ref().unwrap().value, "1");
 }
@@ -431,7 +431,7 @@ authentication:
     let auth_sc = layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "AUTHENTICATION")
+        .find(|sc| sc.short_name == "Authentication")
         .expect("should have authentication state chart");
     assert_eq!(auth_sc.states.len(), 3);
 
@@ -457,7 +457,7 @@ authentication:
     let auth_sc2 = layer2
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "AUTHENTICATION")
+        .find(|sc| sc.short_name == "Authentication")
         .expect("authentication state chart must survive roundtrip");
     assert_eq!(auth_sc.states.len(), auth_sc2.states.len());
 
@@ -491,7 +491,7 @@ fn test_variants_roundtrip() {
     // Verify Boot_Variant has matching parameter
     let boot = non_base
         .iter()
-        .find(|v| v.diag_layer.short_name == "Boot_Variant")
+        .find(|v| v.diag_layer.short_name == "FLXC1000_Boot_Variant")
         .unwrap();
     assert!(
         !boot.variant_patterns.is_empty(),
@@ -518,7 +518,7 @@ fn test_variants_roundtrip() {
 
     let boot2 = non_base2
         .iter()
-        .find(|v| v.diag_layer.short_name == "Boot_Variant")
+        .find(|v| v.diag_layer.short_name == "FLXC1000_Boot_Variant")
         .unwrap();
     let mp2 = &boot2.variant_patterns[0].matching_parameters[0];
     assert_eq!(mp.expected_value, mp2.expected_value);
@@ -554,19 +554,20 @@ fn test_access_patterns_roundtrip() {
         .diag_comm
         .pre_condition_state_refs
         .iter()
-        .filter(|r| r.value == "SessionStates")
+        .filter(|r| r.value == "Session")
         .collect();
     let security_refs: Vec<_> = write_svc
         .diag_comm
         .pre_condition_state_refs
         .iter()
-        .filter(|r| r.value == "SecurityAccessStates")
+        .filter(|r| r.value == "SecurityAccess")
         .collect();
     // extended_write pattern: sessions: [extended], security: [level_01]
+    // State names are CDA names: alias ("extendedDiagnosticSession") and Level_N format
     assert_eq!(session_refs.len(), 1);
-    assert_eq!(session_refs[0].in_param_path_short_name, "extended");
+    assert_eq!(session_refs[0].in_param_path_short_name, "extendedDiagnosticSession");
     assert_eq!(security_refs.len(), 1);
-    assert_eq!(security_refs[0].in_param_path_short_name, "level_01");
+    assert_eq!(security_refs[0].in_param_path_short_name, "Level_1");
 
     // Roundtrip
     let yaml_out = write_yaml(&db).unwrap();

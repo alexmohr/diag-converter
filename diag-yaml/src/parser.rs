@@ -285,10 +285,7 @@ fn yaml_to_ir(doc: &YamlDocument) -> Result<DiagDatabase, YamlParseError> {
     let variant = Variant {
         diag_layer: DiagLayer {
             short_name: ecu_name.clone(),
-            long_name: doc.meta.as_ref().map(|m| LongName {
-                value: m.description.clone(),
-                ti: String::new(),
-            }),
+            long_name: None,
             funct_classes,
             com_param_refs,
             diag_services,
@@ -346,15 +343,41 @@ fn build_type_registry(types: Option<&BTreeMap<String, YamlType>>) -> TypeRegist
 }
 
 /// Resolve a DID type which can be either a string reference or inline type definition.
-fn resolve_did_type<'a>(
-    type_value: &'a serde_yaml::Value,
-    registry: &'a TypeRegistry,
-) -> Option<YamlType> {
+/// Returns `(Option<YamlType>, Option<type_key_name>)`.
+fn resolve_did_type(
+    type_value: &serde_yaml::Value,
+    registry: &TypeRegistry,
+) -> (Option<YamlType>, Option<String>) {
     match type_value {
-        serde_yaml::Value::String(name) => registry.types.get(name).cloned(),
-        serde_yaml::Value::Mapping(_) => serde_yaml::from_value(type_value.clone()).ok(),
-        _ => None,
+        serde_yaml::Value::String(name) => (registry.types.get(name).cloned(), Some(name.clone())),
+        serde_yaml::Value::Mapping(_) => (serde_yaml::from_value(type_value.clone()).ok(), None),
+        _ => (None, None),
     }
+}
+
+/// Derive a CDA-compatible DOP name from a YAML type definition.
+/// Priority: explicit `dop_name` > identical type naming > fallback.
+fn cda_dop_name_for_type(yaml_type: &YamlType, fallback: &str) -> String {
+    if let Some(ref name) = yaml_type.dop_name {
+        return name.clone();
+    }
+    let is_identical = yaml_type.entries.is_none()
+        && yaml_type.scale.is_none()
+        && yaml_type.offset.is_none();
+    if is_identical {
+        match yaml_type.base.as_str() {
+            "u8" => return "IDENTICAL_UINT_8".into(),
+            "u16" => return "IDENTICAL_UINT_16".into(),
+            "u32" => {
+                let bits = yaml_type
+                    .bit_length
+                    .unwrap_or(32);
+                return format!("IDENTICAL_UINT_{bits}");
+            }
+            _ => {}
+        }
+    }
+    fallback.to_string()
 }
 
 /// Convert a YAML type definition to IR DOP.
@@ -531,15 +554,20 @@ fn build_compu_method(yaml_type: &YamlType) -> CompuMethod {
 
 /// Create a ReadDataByIdentifier (0x22) service from a DID definition.
 fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagService {
-    let yaml_type = resolve_did_type(&did.did_type, registry);
+    let (yaml_type, _type_key) = resolve_did_type(&did.did_type, registry);
+    let dop_name = yaml_type.as_ref().map_or_else(
+        || did.name.clone(),
+        |t| cda_dop_name_for_type(t, &did.name),
+    );
+    let data_param_name = did.param_name.as_deref().unwrap_or(&did.name);
     let dop = yaml_type.as_ref().map_or_else(
         || Dop {
             dop_type: DopType::Regular,
-            short_name: did.name.clone(),
+            short_name: dop_name.clone(),
             sdgs: None,
             specific_data: None,
         },
-        |t| yaml_type_to_dop(&did.name, t),
+        |t| yaml_type_to_dop(&dop_name, t),
     );
 
     // Preserve DID-specific YAML fields in an SDG for roundtrip
@@ -571,12 +599,9 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
     DiagService {
         diag_comm: DiagComm {
             short_name: format!("{}_Read", did.name),
-            long_name: did.description.as_ref().map(|d| LongName {
-                value: d.clone(),
-                ti: String::new(),
-            }),
-            semantic: "DATA-READ".into(),
-            funct_classes: vec![],
+            long_name: None,
+            semantic: String::new(),
+            funct_classes: vec![FunctClass { short_name: "Ident".into() }],
             sdgs: did_sdgs,
             diag_class_type: DiagClassType::StartComm,
             pre_condition_state_refs: vec![],
@@ -589,33 +614,31 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
         },
         request: Some(Request {
             params: vec![
-                // SID = 0x22
                 Param {
                     id: 0,
                     param_type: ParamType::CodedConst,
-                    short_name: "SID".into(),
+                    short_name: "SID_RQ".into(),
                     semantic: "SERVICE-ID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(0),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: "0x22".into(),
+                        coded_value: "34".into(),
                         diag_coded_type: uint8_coded_type(),
                     }),
                 },
-                // DID ID
                 Param {
                     id: 1,
                     param_type: ParamType::CodedConst,
-                    short_name: "DID".into(),
-                    semantic: "ID".into(),
+                    short_name: "DID_RQ".into(),
+                    semantic: "DID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(1),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: format!("0x{did_id:04X}"),
+                        coded_value: format!("{did_id}"),
                         diag_coded_type: uint16_coded_type(),
                     }),
                 },
@@ -625,27 +648,25 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
         pos_responses: vec![Response {
             response_type: ResponseType::PosResponse,
             params: vec![
-                // SID = 0x62 (ReadDataByIdentifier positive response)
                 Param {
                     id: 0,
                     param_type: ParamType::CodedConst,
-                    short_name: "SID".into(),
+                    short_name: "SID_PR".into(),
                     semantic: "SERVICE-ID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(0),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: "0x62".into(),
+                        coded_value: "98".into(),
                         diag_coded_type: uint8_coded_type(),
                     }),
                 },
-                // DID echo (matches request byte 1, length 2)
                 Param {
                     id: 1,
                     param_type: ParamType::MatchingRequestParam,
                     short_name: "DID_PR".into(),
-                    semantic: "ID".into(),
+                    semantic: "DID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(1),
@@ -659,7 +680,7 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
                 Param {
                     id: 2,
                     param_type: ParamType::Value,
-                    short_name: did.name.clone(),
+                    short_name: data_param_name.to_string(),
                     semantic: "DATA".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
@@ -684,26 +705,28 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
 
 /// Create a WriteDataByIdentifier (0x2E) service from a DID definition.
 fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagService {
-    let yaml_type = resolve_did_type(&did.did_type, registry);
+    let (yaml_type, _type_key) = resolve_did_type(&did.did_type, registry);
+    let dop_name = yaml_type.as_ref().map_or_else(
+        || did.name.clone(),
+        |t| cda_dop_name_for_type(t, &did.name),
+    );
+    let data_param_name = did.param_name.as_deref().unwrap_or(&did.name);
     let dop = yaml_type.as_ref().map_or_else(
         || Dop {
             dop_type: DopType::Regular,
-            short_name: did.name.clone(),
+            short_name: dop_name.clone(),
             sdgs: None,
             specific_data: None,
         },
-        |t| yaml_type_to_dop(&did.name, t),
+        |t| yaml_type_to_dop(&dop_name, t),
     );
 
     DiagService {
         diag_comm: DiagComm {
             short_name: format!("{}_Write", did.name),
-            long_name: did.description.as_ref().map(|d| LongName {
-                value: d.clone(),
-                ti: String::new(),
-            }),
-            semantic: "DATA-WRITE".into(),
-            funct_classes: vec![],
+            long_name: None,
+            semantic: String::new(),
+            funct_classes: vec![FunctClass { short_name: "Ident".into() }],
             sdgs: None,
             diag_class_type: DiagClassType::StartComm,
             pre_condition_state_refs: vec![],
@@ -719,35 +742,35 @@ fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> Diag
                 Param {
                     id: 0,
                     param_type: ParamType::CodedConst,
-                    short_name: "SID".into(),
+                    short_name: "SID_RQ".into(),
                     semantic: "SERVICE-ID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(0),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: "0x2E".into(),
+                        coded_value: "46".into(),
                         diag_coded_type: uint8_coded_type(),
                     }),
                 },
                 Param {
                     id: 1,
                     param_type: ParamType::CodedConst,
-                    short_name: "DID".into(),
-                    semantic: "ID".into(),
+                    short_name: "DID_RQ".into(),
+                    semantic: "DID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(1),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: format!("0x{did_id:04X}"),
+                        coded_value: format!("{did_id}"),
                         diag_coded_type: uint16_coded_type(),
                     }),
                 },
                 Param {
                     id: 2,
                     param_type: ParamType::Value,
-                    short_name: did.name.clone(),
+                    short_name: data_param_name.to_string(),
                     semantic: "DATA".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
@@ -764,27 +787,25 @@ fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> Diag
         pos_responses: vec![Response {
             response_type: ResponseType::PosResponse,
             params: vec![
-                // SID = 0x6E (WriteDataByIdentifier positive response)
                 Param {
                     id: 0,
                     param_type: ParamType::CodedConst,
-                    short_name: "SID".into(),
+                    short_name: "SID_PR".into(),
                     semantic: "SERVICE-ID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(0),
                     bit_position: Some(0),
                     specific_data: Some(ParamData::CodedConst {
-                        coded_value: "0x6E".into(),
+                        coded_value: "110".into(),
                         diag_coded_type: uint8_coded_type(),
                     }),
                 },
-                // DID echo (matches request byte 1, length 2)
                 Param {
                     id: 1,
                     param_type: ParamType::MatchingRequestParam,
                     short_name: "DID_PR".into(),
-                    semantic: "ID".into(),
+                    semantic: "DID".into(),
                     sdgs: None,
                     physical_default_value: String::new(),
                     byte_position: Some(1),
@@ -812,28 +833,28 @@ fn routine_to_service(rid: u32, routine: &Routine, _registry: &TypeRegistry) -> 
         Param {
             id: 0,
             param_type: ParamType::CodedConst,
-            short_name: "SID".into(),
+            short_name: "SID_RQ".into(),
             semantic: "SERVICE-ID".into(),
             sdgs: None,
             physical_default_value: String::new(),
             byte_position: Some(0),
             bit_position: Some(0),
             specific_data: Some(ParamData::CodedConst {
-                coded_value: "0x31".into(),
+                coded_value: "49".into(),
                 diag_coded_type: uint8_coded_type(),
             }),
         },
         Param {
             id: 1,
             param_type: ParamType::CodedConst,
-            short_name: "RID".into(),
+            short_name: "RID_RQ".into(),
             semantic: "ID".into(),
             sdgs: None,
             physical_default_value: String::new(),
             byte_position: Some(2),
             bit_position: Some(0),
             specific_data: Some(ParamData::CodedConst {
-                coded_value: format!("0x{rid:04X}"),
+                coded_value: format!("{rid}"),
                 diag_coded_type: uint16_coded_type(),
             }),
         },
@@ -928,7 +949,7 @@ fn routine_to_service(rid: u32, routine: &Routine, _registry: &TypeRegistry) -> 
                 value: d.clone(),
                 ti: String::new(),
             }),
-            semantic: "ROUTINE".into(),
+            semantic: String::new(),
             funct_classes: vec![],
             sdgs: None,
             diag_class_type: DiagClassType::StartComm,
@@ -1311,68 +1332,134 @@ fn parse_sessions_to_state_chart(
     sessions: &BTreeMap<String, Session>,
     state_model: Option<&StateModel>,
 ) -> StateChart {
+    // Build mapping from YAML key to CDA-compatible state name (alias or capitalized key)
+    let key_to_cda: BTreeMap<&str, String> = sessions
+        .iter()
+        .map(|(key, session)| {
+            let cda_name = session
+                .alias
+                .clone()
+                .unwrap_or_else(|| capitalize_first(key));
+            (key.as_str(), cda_name)
+        })
+        .collect();
+
     let states: Vec<State> = sessions
         .iter()
         .map(|(key, session)| {
             let id = yaml_value_to_u64(&session.id);
+            let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
             State {
-                short_name: key.clone(),
+                short_name: cda_name,
                 long_name: Some(LongName {
                     value: id.to_string(),
-                    ti: session.alias.clone().unwrap_or_default(),
+                    ti: key.clone(), // Store YAML key for roundtrip
                 }),
             }
         })
         .collect();
 
-    // Determine start state from state_model or default to "default"
-    let start_state = state_model
+    // Determine start state - map YAML key to CDA name
+    let yaml_start = state_model
         .and_then(|sm| sm.initial_state.as_ref())
-        .map_or_else(|| "default".into(), |is| is.session.clone());
+        .map_or("default", |is| is.session.as_str());
+    let start_state = key_to_cda
+        .get(yaml_start)
+        .cloned()
+        .unwrap_or_else(|| capitalize_first(yaml_start));
 
-    // Build transitions from state_model.session_transitions
-    let state_transitions = state_model
+    // Build transitions - map YAML keys to CDA names
+    let state_transitions: Vec<StateTransition> = state_model
         .and_then(|sm| sm.session_transitions.as_ref())
         .map(|transitions| {
-            transitions
-                .iter()
-                .flat_map(|(from, targets)| {
-                    targets.iter().map(move |to| StateTransition {
-                        short_name: format!("{from}_to_{to}"),
-                        source_short_name_ref: from.clone(),
-                        target_short_name_ref: to.clone(),
-                    })
-                })
-                .collect()
+            let mut result = Vec::new();
+            for (from, targets) in transitions {
+                let cda_from = key_to_cda.get(from.as_str()).cloned().unwrap_or_else(|| from.clone());
+                for to in targets {
+                    let cda_to = key_to_cda.get(to.as_str()).cloned().unwrap_or_else(|| to.clone());
+                    result.push(StateTransition {
+                        short_name: format!("{cda_from}_to_{cda_to}"),
+                        source_short_name_ref: cda_from.clone(),
+                        target_short_name_ref: cda_to.clone(),
+                    });
+                }
+            }
+            result
         })
         .unwrap_or_default();
 
     StateChart {
-        short_name: "SessionStates".into(),
-        semantic: "SESSION".into(),
+        short_name: "Session".into(),
+        semantic: String::new(),
         state_transitions,
         start_state_short_name_ref: start_state,
         states,
     }
 }
 
+pub(crate) fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
 fn parse_security_to_state_chart(security: &BTreeMap<String, SecurityLevel>) -> StateChart {
-    let states: Vec<State> = security
+    // Locked state (start state, always present)
+    let mut states = vec![State {
+        short_name: "Locked".into(),
+        long_name: Some(LongName {
+            value: "0".into(),
+            ti: String::new(),
+        }),
+    }];
+
+    // Build mapping from YAML key to CDA name (Level_N)
+    let key_to_cda: BTreeMap<&str, String> = security
         .iter()
-        .map(|(key, level)| State {
-            short_name: key.clone(),
-            long_name: Some(LongName {
-                value: level.level.to_string(),
-                ti: String::new(),
-            }),
-        })
+        .map(|(key, level)| (key.as_str(), format!("Level_{}", level.level)))
         .collect();
 
+    for (key, level) in security {
+        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+        states.push(State {
+            short_name: cda_name,
+            long_name: Some(LongName {
+                value: level.level.to_string(),
+                ti: key.clone(), // Store YAML key for roundtrip
+            }),
+        });
+    }
+
+    // Build transitions: Locked->Locked (self), Locked->Level_N, Level_N->Locked
+    let mut transitions = vec![StateTransition {
+        short_name: "Locked_to_Locked".into(),
+        source_short_name_ref: "Locked".into(),
+        target_short_name_ref: "Locked".into(),
+    }];
+    for (key, _level) in security {
+        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+        transitions.push(StateTransition {
+            short_name: format!("Locked_to_{cda_name}"),
+            source_short_name_ref: "Locked".into(),
+            target_short_name_ref: cda_name.clone(),
+        });
+    }
+    for (key, _level) in security {
+        let cda_name = key_to_cda.get(key.as_str()).cloned().unwrap_or_else(|| key.clone());
+        transitions.push(StateTransition {
+            short_name: format!("{cda_name}_to_Locked"),
+            source_short_name_ref: cda_name,
+            target_short_name_ref: "Locked".into(),
+        });
+    }
+
     StateChart {
-        short_name: "SecurityAccessStates".into(),
-        semantic: "SECURITY".into(),
-        state_transitions: vec![],
-        start_state_short_name_ref: String::new(),
+        short_name: "SecurityAccess".into(),
+        semantic: String::new(),
+        state_transitions: transitions,
+        start_state_short_name_ref: "Locked".into(),
         states,
     }
 }
@@ -1397,8 +1484,8 @@ fn parse_authentication_to_state_chart(auth: &Authentication) -> Option<StateCha
         .collect();
 
     Some(StateChart {
-        short_name: "AuthenticationStates".into(),
-        semantic: "AUTHENTICATION".into(),
+        short_name: "Authentication".into(),
+        semantic: String::new(),
         state_transitions: vec![],
         start_state_short_name_ref: String::new(),
         states,
@@ -1438,11 +1525,8 @@ fn parse_variant_definition(
 
     Variant {
         diag_layer: DiagLayer {
-            short_name: name.to_string(),
-            long_name: vdef.description.as_ref().map(|d| LongName {
-                value: d.clone(),
-                ti: String::new(),
-            }),
+            short_name: format!("{base_variant_name}_{name}"),
+            long_name: None,
             funct_classes: vec![],
             com_param_refs: vec![],
             diag_services,
@@ -1489,13 +1573,17 @@ fn build_access_pattern_lookup(
         .flat_map(|s| s.iter())
         .map(|(name, session)| {
             let id = yaml_value_to_u64(&session.id);
+            let cda_name = session
+                .alias
+                .clone()
+                .unwrap_or_else(|| capitalize_first(name));
             (
                 name.as_str(),
                 State {
-                    short_name: name.clone(),
+                    short_name: cda_name,
                     long_name: Some(LongName {
                         value: id.to_string(),
-                        ti: session.alias.clone().unwrap_or_default(),
+                        ti: name.clone(),
                     }),
                 },
             )
@@ -1506,13 +1594,14 @@ fn build_access_pattern_lookup(
         .into_iter()
         .flat_map(|s| s.iter())
         .map(|(name, level)| {
+            let cda_name = format!("Level_{}", level.level);
             (
                 name.as_str(),
                 State {
-                    short_name: name.clone(),
+                    short_name: cda_name,
                     long_name: Some(LongName {
                         value: level.level.to_string(),
-                        ti: String::new(),
+                        ti: name.clone(),
                     }),
                 },
             )
@@ -1551,9 +1640,9 @@ fn build_access_pattern_lookup(
                         if let Some(name) = item.as_str() {
                             if let Some(state) = session_states.get(name) {
                                 refs.push(PreConditionStateRef {
-                                    value: "SessionStates".into(),
+                                    value: "Session".into(),
                                     in_param_if_short_name: String::new(),
-                                    in_param_path_short_name: name.to_string(),
+                                    in_param_path_short_name: state.short_name.clone(),
                                     state: Some(state.clone()),
                                 });
                             }
@@ -1571,9 +1660,9 @@ fn build_access_pattern_lookup(
                         if let Some(name) = item.as_str() {
                             if let Some(state) = security_states.get(name) {
                                 refs.push(PreConditionStateRef {
-                                    value: "SecurityAccessStates".into(),
+                                    value: "SecurityAccess".into(),
                                     in_param_if_short_name: String::new(),
-                                    in_param_path_short_name: name.to_string(),
+                                    in_param_path_short_name: state.short_name.clone(),
                                     state: Some(state.clone()),
                                 });
                             }
@@ -1591,7 +1680,7 @@ fn build_access_pattern_lookup(
                         if let Some(name) = item.as_str() {
                             if let Some(state) = auth_states.get(name) {
                                 refs.push(PreConditionStateRef {
-                                    value: "AuthenticationStates".into(),
+                                    value: "Authentication".into(),
                                     in_param_if_short_name: String::new(),
                                     in_param_path_short_name: name.to_string(),
                                     state: Some(state.clone()),

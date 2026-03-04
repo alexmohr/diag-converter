@@ -27,12 +27,12 @@ fn test_flxc1000_structure() {
     assert!(
         non_base
             .iter()
-            .any(|v| v.diag_layer.short_name == "Boot_Variant")
+            .any(|v| v.diag_layer.short_name == "FLXC1000_Boot_Variant")
     );
     assert!(
         non_base
             .iter()
-            .any(|v| v.diag_layer.short_name == "App_0101")
+            .any(|v| v.diag_layer.short_name == "FLXC1000_App_0101")
     );
 
     // 4 sessions
@@ -40,18 +40,18 @@ fn test_flxc1000_structure() {
         .diag_layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SESSION")
+        .find(|sc| sc.short_name == "Session")
         .expect("should have session state chart");
     assert_eq!(session_chart.states.len(), 4);
 
-    // 3 security levels
+    // 3 security levels + Locked state
     let security_chart = base
         .diag_layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SECURITY")
+        .find(|sc| sc.short_name == "SecurityAccess")
         .expect("should have security state chart");
-    assert_eq!(security_chart.states.len(), 3);
+    assert_eq!(security_chart.states.len(), 4);
 
     // Services: at least 3 read DIDs + generated services
     assert!(
@@ -73,7 +73,7 @@ fn test_flxcng1000_structure() {
     assert_eq!(db.variants.len(), 2);
     let non_base: Vec<_> = db.variants.iter().filter(|v| !v.is_base_variant).collect();
     assert_eq!(non_base.len(), 1);
-    assert_eq!(non_base[0].diag_layer.short_name, "App_1010");
+    assert_eq!(non_base[0].diag_layer.short_name, "FLXCNG1000_App_1010");
 
     let base = db.variants.iter().find(|v| v.is_base_variant).unwrap();
 
@@ -82,18 +82,18 @@ fn test_flxcng1000_structure() {
         .diag_layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SESSION")
+        .find(|sc| sc.short_name == "Session")
         .expect("should have session state chart");
     assert_eq!(session_chart.states.len(), 4);
 
-    // 2 security levels
+    // 2 security levels + Locked state
     let security_chart = base
         .diag_layer
         .state_charts
         .iter()
-        .find(|sc| sc.semantic == "SECURITY")
+        .find(|sc| sc.short_name == "SecurityAccess")
         .expect("should have security state chart");
-    assert_eq!(security_chart.states.len(), 2);
+    assert_eq!(security_chart.states.len(), 3);
 
     // securityAccess is disabled - verify no SecurityAccess services generated
     let sec_services: Vec<_> = base

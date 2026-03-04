@@ -77,16 +77,17 @@ impl<'a> ServiceGenerator<'a> {
             .map(|(name, session)| {
                 let id = yaml_value_to_u8(&session.id);
                 let label = session.alias.as_deref().unwrap_or(name);
+                let sf = subfunction_param_name("SESSION");
                 build_service(
                     &format!("{label}_Start"),
                     "SESSION",
                     vec![
-                        coded_const_param("SID", 0, 8, "0x10"),
-                        coded_const_param("SubFunction", 1, 8, &format!("0x{id:02X}")),
+                        coded_const_param("SID_RQ", 0, 8, "16"),
+                        coded_const_param(sf, 1, 8, &id.to_string()),
                     ],
                     vec![
-                        coded_const_param("SID", 0, 8, "0x50"),
-                        matching_request_param("SubFunction_Echo", 1, 1),
+                        coded_const_param("SID_PR", 0, 8, "80"),
+                        matching_request_param(sf, 1, 1),
                     ],
                 )
             })
@@ -103,6 +104,7 @@ impl<'a> ServiceGenerator<'a> {
                 .to_string()
         };
 
+        let sf = subfunction_param_name("SESSION");
         match subfuncs {
             // Map form: {default: 0x01, programming: 0x02, extended: 0x03}
             serde_yaml::Value::Mapping(map) => map
@@ -115,12 +117,12 @@ impl<'a> ServiceGenerator<'a> {
                         &format!("{label}_Start"),
                         "SESSION",
                         vec![
-                            coded_const_param("SID", 0, 8, "0x10"),
-                            coded_const_param("SubFunction", 1, 8, &format!("0x{id:02X}")),
+                            coded_const_param("SID_RQ", 0, 8, "16"),
+                            coded_const_param(sf, 1, 8, &id.to_string()),
                         ],
                         vec![
-                            coded_const_param("SID", 0, 8, "0x50"),
-                            matching_request_param("SubFunction_Echo", 1, 1),
+                            coded_const_param("SID_PR", 0, 8, "80"),
+                            matching_request_param(sf, 1, 1),
                         ],
                     ))
                 })
@@ -134,12 +136,12 @@ impl<'a> ServiceGenerator<'a> {
                         &format!("0x{id:02X}_Start"),
                         "SESSION",
                         vec![
-                            coded_const_param("SID", 0, 8, "0x10"),
-                            coded_const_param("SubFunction", 1, 8, &format!("0x{id:02X}")),
+                            coded_const_param("SID_RQ", 0, 8, "16"),
+                            coded_const_param(sf, 1, 8, &id.to_string()),
                         ],
                         vec![
-                            coded_const_param("SID", 0, 8, "0x50"),
-                            matching_request_param("SubFunction_Echo", 1, 1),
+                            coded_const_param("SID_PR", 0, 8, "80"),
+                            matching_request_param(sf, 1, 1),
                         ],
                     )
                 })
@@ -173,28 +175,31 @@ impl<'a> ServiceGenerator<'a> {
                 &format!("RequestSeed_Level_{level_num}"),
                 "SECURITY-ACCESS",
                 vec![
-                    coded_const_param("SID", 0, 8, "0x27"),
-                    coded_const_param("SubFunction", 1, 8, &format!("0x{seed_byte:02X}")),
+                    coded_const_param("SID_RQ", 0, 8, "39"),
+                    coded_const_param("SecurityAccessType", 1, 8, &seed_byte.to_string()),
                 ],
                 vec![
-                    coded_const_param("SID", 0, 8, "0x67"),
-                    matching_request_param("SubFunction_Echo", 1, 1),
+                    coded_const_param("SID_PR", 0, 8, "103"),
+                    matching_request_param("SecurityAccessType", 1, 1),
                 ],
             ));
 
-            services.push(build_service(
-                &format!("SendKey_Level_{level_num}"),
+            let send_key_name = format!("SendKey_Level_{level_num}");
+            let mut send_key = build_service(
+                &send_key_name,
                 "SECURITY-ACCESS",
                 vec![
-                    coded_const_param("SID", 0, 8, "0x27"),
-                    coded_const_param("SubFunction", 1, 8, &format!("0x{key_byte:02X}")),
-                    value_param("SecurityKey", 2, (level.key_size * 8).max(8)),
+                    coded_const_param("SID_RQ", 0, 8, "39"),
+                    coded_const_param("SUBFUNCTION", 1, 8, &key_byte.to_string()),
+                    value_param("SecurityKey", 2, (level.key_size * 8).max(8), "SecurityAccess_EndOfPduByteArray"),
                 ],
                 vec![
-                    coded_const_param("SID", 0, 8, "0x67"),
-                    matching_request_param("SubFunction_Echo", 1, 1),
+                    coded_const_param("SID_PR", 0, 8, "103"),
+                    matching_request_param("SecurityAccessType", 1, 1),
                 ],
-            ));
+            );
+            send_key.neg_responses.push(standard_neg_response());
+            services.push(send_key);
         }
         services
     }
@@ -209,51 +214,34 @@ impl<'a> ServiceGenerator<'a> {
             _ => return vec![],
         };
 
+        let sf = subfunction_param_name("ECU-RESET");
+        let make = |name: &str, subfunc: u8| {
+            build_service(
+                name,
+                "ECU-RESET",
+                vec![
+                    coded_const_param("SID_RQ", 0, 8, "17"),
+                    coded_const_param(sf, 1, 8, &subfunc.to_string()),
+                ],
+                vec![
+                    coded_const_param("SID_PR", 0, 8, "81"),
+                    matching_request_param(sf, 1, 1),
+                ],
+            )
+        };
+
         if let Some(serde_yaml::Value::Mapping(subfuncs)) = &entry.subfunctions {
             subfuncs
                 .iter()
                 .filter_map(|(k, v)| {
                     let name = k.as_str()?;
                     let subfunc = yaml_value_to_u8(v);
-                    // Convert camelCase to PascalCase (e.g., hardReset -> HardReset)
                     let pascal = to_pascal_case(name);
-                    Some(build_service(
-                        &pascal,
-                        "ECU-RESET",
-                        vec![
-                            coded_const_param("SID", 0, 8, "0x11"),
-                            coded_const_param("SubFunction", 1, 8, &format!("0x{subfunc:02X}")),
-                        ],
-                        vec![
-                            coded_const_param("SID", 0, 8, "0x51"),
-                            matching_request_param("SubFunction_Echo", 1, 1),
-                        ],
-                    ))
+                    Some(make(&pascal, subfunc))
                 })
                 .collect()
         } else {
-            // Default reset types if no subfunctions specified
-            [
-                ("HardReset", 0x01u8),
-                ("KeyOffOnReset", 0x02),
-                ("SoftReset", 0x03),
-            ]
-            .iter()
-            .map(|(name, subfunc)| {
-                build_service(
-                    name,
-                    "ECU-RESET",
-                    vec![
-                        coded_const_param("SID", 0, 8, "0x11"),
-                        coded_const_param("SubFunction", 1, 8, &format!("0x{subfunc:02X}")),
-                    ],
-                    vec![
-                        coded_const_param("SID", 0, 8, "0x51"),
-                        matching_request_param("SubFunction_Echo", 1, 1),
-                    ],
-                )
-            })
-            .collect()
+            vec![make("HardReset", 0x01), make("KeyOffOnReset", 0x02), make("SoftReset", 0x03)]
         }
     }
 
@@ -273,33 +261,31 @@ impl<'a> ServiceGenerator<'a> {
             _ => return vec![],
         };
 
+        let sf = subfunction_param_name("AUTHENTICATION");
         subfuncs
             .iter()
             .filter_map(|(k, v)| {
                 let name = k.as_str()?;
                 let subfunc = yaml_value_to_u8(v);
                 let pascal = to_pascal_case(name);
-                // Response params depend on subfunction:
-                // 0x08 (Configuration): [SID, SubFunc_Echo, AuthenticationReturnParameter]
-                // All others: [SID, SubFunc_Echo]
                 let response_params = if subfunc == 0x08 {
                     vec![
-                        coded_const_param("SID", 0, 8, "0x69"),
-                        matching_request_param("SubFunction_Echo", 1, 1),
-                        value_param("AuthenticationReturnParameter", 2, 8),
+                        coded_const_param("SID_PR", 0, 8, "105"),
+                        matching_request_param(sf, 1, 1),
+                        value_param("AuthenticationReturnParameter", 2, 8, "AuthReturnParam"),
                     ]
                 } else {
                     vec![
-                        coded_const_param("SID", 0, 8, "0x69"),
-                        matching_request_param("SubFunction_Echo", 1, 1),
+                        coded_const_param("SID_PR", 0, 8, "105"),
+                        matching_request_param(sf, 1, 1),
                     ]
                 };
                 Some(build_service(
                     &format!("Authentication_{pascal}"),
                     "AUTHENTICATION",
                     vec![
-                        coded_const_param("SID", 0, 8, "0x29"),
-                        coded_const_param("SubFunction", 1, 8, &format!("0x{subfunc:02X}")),
+                        coded_const_param("SID_RQ", 0, 8, "41"),
+                        coded_const_param(sf, 1, 8, &subfunc.to_string()),
                     ],
                     response_params,
                 ))
@@ -345,18 +331,19 @@ impl<'a> ServiceGenerator<'a> {
 
         // TemporalSync (subfunc 0x88) with extra temporalEraId parameter
         if entry.temporal_sync.unwrap_or(false) {
+            let sf = subfunction_param_name("COMMUNICATION-CONTROL");
             services.push(build_service(
                 "TemporalSync_Control",
                 "COMMUNICATION-CONTROL",
                 vec![
-                    coded_const_param("SID", 0, 8, "0x28"),
-                    coded_const_param("SubFunction", 1, 8, "0x88"),
-                    value_param("CommunicationType", 2, 8),
-                    value_param("temporalEraId", 3, 32),
+                    coded_const_param("SID_RQ", 0, 8, "40"),
+                    coded_const_param(sf, 1, 8, "136"),
+                    coded_const_param("CommunicationType", 2, 8, "1"),
+                    value_param("temporalEraId", 3, 32, "temporalEraId"),
                 ],
                 vec![
-                    coded_const_param("SID", 0, 8, "0x68"),
-                    matching_request_param("SubFunction_Echo", 1, 1),
+                    coded_const_param("SID_PR", 0, 8, "104"),
+                    matching_request_param(sf, 1, 1),
                 ],
             ));
         }
@@ -372,42 +359,48 @@ impl<'a> ServiceGenerator<'a> {
             Some(e) if e.enabled => {}
             _ => return vec![],
         }
+        let mut req_download = build_service(
+            "RequestDownload",
+            "DOWNLOAD",
+            vec![
+                coded_const_param("SID_RQ", 0, 8, "52"),
+                value_param("DataFormatIdentifier", 1, 8, "IDENTICAL_UINT_8"),
+                value_param("AddressAndLengthFormatIdentifier", 2, 8, "IDENTICAL_UINT_8"),
+                value_param("MemoryAddress", 3, 32, "MemoryAddressArray"),
+                value_param("MemorySize", 7, 32, "MemorySizeArray"),
+            ],
+            vec![
+                coded_const_param("SID_PR", 0, 8, "116"),
+                value_param("LengthFormatIdentifier", 1, 8, "IDENTICAL_UINT_8"),
+                value_param("MaxNumberOfBlockLength", 2, 32, "IDENTICAL_UINT_32"),
+            ],
+        );
+        req_download.diag_comm.semantic = "DATA".to_string();
         vec![
-            build_service(
-                "RequestDownload",
-                "DOWNLOAD",
-                vec![
-                    coded_const_param("SID", 0, 8, "0x34"),
-                    value_param("DataFormatIdentifier", 1, 8),
-                    value_param("AddressAndLengthFormatIdentifier", 2, 8),
-                    value_param("MemoryAddress", 3, 32),
-                    value_param("MemorySize", 7, 32),
-                ],
-                vec![
-                    coded_const_param("SID", 0, 8, "0x74"),
-                    value_param("LengthFormatIdentifier", 1, 8),
-                    value_param("MaxNumberOfBlockLength", 2, 32),
-                ],
-            ),
-            build_service(
-                "TransferData",
-                "DOWNLOAD",
-                vec![
-                    coded_const_param("SID", 0, 8, "0x36"),
-                    value_param("BlockSequenceCounter", 1, 8),
-                    value_param("TransferRequestParameterRecord", 2, 0),
-                ],
-                vec![
-                    coded_const_param("SID", 0, 8, "0x76"),
-                    matching_request_param("BlockSequenceCounter_Echo", 1, 1),
-                    value_param("TransferResponseParameterRecord", 2, 0),
-                ],
-            ),
+            req_download,
+            {
+                let mut bsc_resp = matching_request_param("BlockSequenceCounter", 1, 1);
+                bsc_resp.semantic = "DATA".to_string();
+                build_service(
+                    "TransferData",
+                    "DOWNLOAD",
+                    vec![
+                        coded_const_param("SID_RQ", 0, 8, "54"),
+                        value_param("BlockSequenceCounter", 1, 8, "IDENTICAL_UINT_8"),
+                        value_param("TransferRequestParameterRecord", 1, 0, "TransferData"),
+                    ],
+                    vec![
+                        coded_const_param("SID_PR", 0, 8, "118"),
+                        bsc_resp,
+                        value_param("TransferRequestParameterRecord", 1, 0, "TransferData"),
+                    ],
+                )
+            },
             build_service(
                 "TransferExit",
                 "DOWNLOAD",
-                vec![coded_const_param("SID", 0, 8, "0x37")],
-                vec![coded_const_param("SID", 0, 8, "0x77")],
+                vec![coded_const_param("SID_RQ", 0, 8, "55")],
+                vec![coded_const_param("SID_PR", 0, 8, "119")],
             ),
         ]
     }
@@ -423,36 +416,36 @@ impl<'a> ServiceGenerator<'a> {
                 "RequestUpload",
                 "UPLOAD",
                 vec![
-                    coded_const_param("SID", 0, 8, "0x35"),
-                    value_param("DataFormatIdentifier", 1, 8),
-                    value_param("AddressAndLengthFormatIdentifier", 2, 8),
-                    value_param("MemoryAddress", 3, 32),
-                    value_param("MemorySize", 7, 32),
+                    coded_const_param("SID_RQ", 0, 8, "53"),
+                    value_param("DataFormatIdentifier", 1, 8, "IDENTICAL_UINT_8"),
+                    value_param("AddressAndLengthFormatIdentifier", 2, 8, "IDENTICAL_UINT_8"),
+                    value_param("MemoryAddress", 3, 32, "MemoryAddressArray"),
+                    value_param("MemorySize", 7, 32, "MemorySizeArray"),
                 ],
                 vec![
-                    coded_const_param("SID", 0, 8, "0x75"),
-                    value_param("LengthFormatIdentifier", 1, 8),
-                    value_param("MaxNumberOfBlockLength", 2, 32),
+                    coded_const_param("SID_PR", 0, 8, "117"),
+                    value_param("LengthFormatIdentifier", 1, 8, "IDENTICAL_UINT_8"),
+                    value_param("MaxNumberOfBlockLength", 2, 32, "IDENTICAL_UINT_32"),
                 ],
             ),
             build_service(
                 "TransferData_Upload",
                 "UPLOAD",
                 vec![
-                    coded_const_param("SID", 0, 8, "0x36"),
-                    value_param("BlockSequenceCounter", 1, 8),
+                    coded_const_param("SID_RQ", 0, 8, "54"),
+                    value_param("BlockSequenceCounter", 1, 8, "IDENTICAL_UINT_8"),
                 ],
                 vec![
-                    coded_const_param("SID", 0, 8, "0x76"),
-                    matching_request_param("BlockSequenceCounter_Echo", 1, 1),
-                    value_param("TransferResponseParameterRecord", 2, 0),
+                    coded_const_param("SID_PR", 0, 8, "118"),
+                    value_param("BlockSequenceCounter", 1, 8, "IDENTICAL_UINT_8"),
+                    value_param("TransferRequestParameterRecord", 2, 0, "TransferData"),
                 ],
             ),
             build_service(
                 "RequestTransferExit_Upload",
                 "UPLOAD",
-                vec![coded_const_param("SID", 0, 8, "0x37")],
-                vec![coded_const_param("SID", 0, 8, "0x77")],
+                vec![coded_const_param("SID_RQ", 0, 8, "55")],
+                vec![coded_const_param("SID_PR", 0, 8, "119")],
             ),
         ]
     }
@@ -465,80 +458,117 @@ impl<'a> ServiceGenerator<'a> {
             Some(e) if e.enabled => {}
             _ => return vec![],
         }
+        let sf = subfunction_param_name("TESTING");
         vec![build_service(
             "TesterPresent",
             "TESTING",
             vec![
-                coded_const_param("SID", 0, 8, "0x3E"),
-                coded_const_param("SubFunction", 1, 8, "0x00"),
+                coded_const_param("SID_RQ", 0, 8, "62"),
+                coded_const_param(sf, 1, 8, "0"),
             ],
             vec![
-                coded_const_param("SID", 0, 8, "0x7E"),
-                matching_request_param("SubFunction_Echo", 1, 1),
+                coded_const_param("SID_PR", 0, 8, "126"),
+                matching_request_param(sf, 1, 1),
             ],
         )]
     }
 
-    /// ControlDTCSetting (0x85)
+    /// ControlDTCSetting (0x85): one service per configured DTC setting mode.
+    ///
+    /// Service naming follows CDA convention: `DTC_Setting_Mode_{name}`.
+    /// Subfunctions can be configured in YAML; defaults to On(0x01) and Off(0x02).
     pub fn generate_control_dtc_setting(&self) -> Vec<DiagService> {
-        match &self.services.control_dtc_setting {
-            Some(e) if e.enabled => {}
+        let entry = match &self.services.control_dtc_setting {
+            Some(e) if e.enabled => e,
             _ => return vec![],
+        };
+
+        let sf = subfunction_param_name("CONTROL-DTC-SETTING");
+        let make = |name: &str, subfunc: u8| {
+            build_service(
+                &format!("DTC_Setting_Mode_{name}"),
+                "CONTROL-DTC-SETTING",
+                vec![
+                    coded_const_param("SID_RQ", 0, 8, "133"),
+                    coded_const_param(sf, 1, 8, &subfunc.to_string()),
+                ],
+                vec![
+                    coded_const_param("SID_PR", 0, 8, "197"),
+                    matching_request_param(sf, 1, 1),
+                ],
+            )
+        };
+
+        if let Some(serde_yaml::Value::Mapping(subfuncs)) = &entry.subfunctions {
+            subfuncs
+                .iter()
+                .filter_map(|(k, v)| {
+                    let name = k.as_str()?;
+                    let subfunc = yaml_value_to_u8(v);
+                    let pascal = to_pascal_case(name);
+                    Some(make(&pascal, subfunc))
+                })
+                .collect()
+        } else {
+            vec![make("On", 0x01), make("Off", 0x02)]
         }
-        [("on", 0x01u8), ("off", 0x02u8)]
-            .iter()
-            .map(|(name, subfunc)| {
-                build_service(
-                    &format!("ControlDTCSetting_{name}"),
-                    "CONTROL-DTC-SETTING",
-                    vec![
-                        coded_const_param("SID", 0, 8, "0x85"),
-                        coded_const_param("SubFunction", 1, 8, &format!("0x{subfunc:02X}")),
-                    ],
-                    vec![
-                        coded_const_param("SID", 0, 8, "0xC5"),
-                        matching_request_param("SubFunction_Echo", 1, 1),
-                    ],
-                )
-            })
-            .collect()
     }
 
     /// ClearDiagnosticInformation (0x14)
+    ///
+    /// Service name follows CDA convention: `FaultMem_ClearDTCs`.
     pub fn generate_clear_diagnostic_information(&self) -> Vec<DiagService> {
         match &self.services.clear_diagnostic_information {
             Some(e) if e.enabled => {}
             _ => return vec![],
         }
         vec![build_service(
-            "ClearDiagnosticInformation",
+            "FaultMem_ClearDTCs",
             "CLEAR-DTC",
             vec![
-                coded_const_param("SID", 0, 8, "0x14"),
-                value_param("DTCGroupOfDTC", 1, 24),
+                coded_const_param("SID_RQ", 0, 8, "20"),
+                value_param("Dtc", 1, 24, "RecordDataType"),
             ],
-            vec![coded_const_param("SID", 0, 8, "0x54")],
+            vec![coded_const_param("SID_PR", 0, 8, "84")],
         )]
     }
 
-    /// ReadDTCInformation (0x19)
+    /// ReadDTCInformation (0x19): one service per configured subfunction.
+    ///
+    /// Service naming follows CDA convention: `FaultMem_{name}`.
+    /// Parameter structure varies by subfunction type:
+    /// - ReportDTCByStatusMask (0x02): includes DTC status mask bit params
+    /// - ReportDTCSnapshotRecordByDtcNumber (0x04): includes DtcCode + RecordNr
+    /// - ReportDTCExtDataRecordByDtcNumber (0x06): includes DtcCode + RecordNr
     pub fn generate_read_dtc_information(&self) -> Vec<DiagService> {
-        match &self.services.read_dtc_information {
-            Some(e) if e.enabled => {}
+        let entry = match &self.services.read_dtc_information {
+            Some(e) if e.enabled => e,
             _ => return vec![],
+        };
+
+        let build_by_subfunc = |name: &str, subfunc: u8| {
+            let (req_params, resp_params) = read_dtc_params(subfunc);
+            build_service(
+                &format!("FaultMem_{name}"),
+                "READ-DTC-INFO",
+                req_params,
+                resp_params,
+            )
+        };
+
+        if let Some(serde_yaml::Value::Mapping(subfuncs)) = &entry.subfunctions {
+            subfuncs
+                .iter()
+                .filter_map(|(k, v)| {
+                    let name = k.as_str()?;
+                    let subfunc = yaml_value_to_u8(v);
+                    let pascal = to_pascal_case(name);
+                    Some(build_by_subfunc(&pascal, subfunc))
+                })
+                .collect()
+        } else {
+            vec![build_by_subfunc("ReportDTCByStatusMask", 0x02)]
         }
-        vec![build_service(
-            "ReadDTCInformation",
-            "READ-DTC-INFO",
-            vec![
-                coded_const_param("SID", 0, 8, "0x19"),
-                value_param("SubFunction", 1, 8),
-            ],
-            vec![
-                coded_const_param("SID", 0, 8, "0x59"),
-                matching_request_param("SubFunction_Echo", 1, 1),
-            ],
-        )]
     }
 }
 
@@ -593,16 +623,141 @@ fn yaml_value_to_u8(v: &serde_yaml::Value) -> u8 {
     }
 }
 
+/// CDA-compatible subfunction param name based on service semantic.
+fn subfunction_param_name(semantic: &str) -> &'static str {
+    match semantic {
+        "SESSION" => "SessionType",
+        "ECU-RESET" => "ResetType",
+        "COMMUNICATION-CONTROL" => "ControlType",
+        "CONTROL-DTC-SETTING" => "SettingType",
+        "AUTHENTICATION" => "SUBFUNCTION",
+        _ => "SubFunction",
+    }
+}
+
+/// CDA-compatible long_name for generated services.
+fn service_long_name(short_name: &str, semantic: &str) -> Option<String> {
+    match semantic {
+        "COMMUNICATION-CONTROL" => {
+            let base = short_name.strip_suffix("_Control").unwrap_or(short_name);
+            let readable = camel_to_words(base)
+                .replace("Rx", "Receive")
+                .replace("Tx", "Transmit")
+                .replace(" And ", " and ")
+                .replace(" With ", " with ")
+                .replace(" Sync", " Synchronization");
+            Some(format!("Communication Control - {readable}"))
+        }
+        "CONTROL-DTC-SETTING" => {
+            let mode = short_name.strip_prefix("DTC_Setting_Mode_").unwrap_or(short_name);
+            Some(format!("DTC Setting {}", camel_to_words(mode)))
+        }
+        "CLEAR-DTC" => Some("Clear DTCs".to_string()),
+        "READ-DTC-INFO" => {
+            let name = short_name.strip_prefix("FaultMem_").unwrap_or(short_name);
+            let words = camel_to_words(name)
+                .replace(" Ext ", " Extended ")
+                .replace(" Dtc ", " DTC ")
+                .replace(" Dtc", " DTC");
+            Some(words)
+        }
+        "DOWNLOAD" => None,
+        _ => None,
+    }
+}
+
+/// Convert CamelCase to space-separated words, preserving acronyms (e.g. "DTC", "DTCs").
+fn camel_to_words(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut words = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '_' {
+            words.push(' ');
+            i += 1;
+            continue;
+        }
+        if chars[i].is_uppercase() && !words.is_empty() && !words.ends_with(' ') {
+            // Check if this starts an acronym (consecutive uppercase)
+            let mut j = i;
+            while j < chars.len() && chars[j].is_uppercase() {
+                j += 1;
+            }
+            let acronym_len = j - i;
+            if acronym_len > 1 {
+                if j < chars.len() && chars[j].is_lowercase() {
+                    // Check if it's just a plural 's' followed by uppercase or end
+                    let is_plural_s = chars[j] == 's'
+                        && (j + 1 >= chars.len() || chars[j + 1].is_uppercase() || chars[j + 1] == '_');
+                    if is_plural_s {
+                        // Keep entire acronym + 's' as one token (e.g. "DTCs")
+                        words.push(' ');
+                        for c in &chars[i..=j] {
+                            words.push(*c);
+                        }
+                        i = j + 1;
+                    } else {
+                        words.push(' ');
+                        // All but last uppercase are the acronym
+                        for c in &chars[i..j - 1] {
+                            words.push(*c);
+                        }
+                        // Last uppercase + lowercase(s) form next word
+                        i = j - 1;
+                    }
+                } else {
+                    words.push(' ');
+                    for c in &chars[i..j] {
+                        words.push(*c);
+                    }
+                    i = j;
+                }
+            } else {
+                words.push(' ');
+                words.push(chars[i]);
+                i += 1;
+            }
+        } else {
+            words.push(chars[i]);
+            i += 1;
+        }
+    }
+    words
+}
+
+/// Map service semantic to CDA-compatible functional classes.
+fn semantic_to_funct_classes(semantic: &str) -> Vec<FunctClass> {
+    let fc = |name: &str| FunctClass {
+        short_name: name.to_string(),
+    };
+    match semantic {
+        "SESSION" => vec![fc("Session")],
+        "ECU-RESET" => vec![fc("EcuReset")],
+        "COMMUNICATION-CONTROL" => vec![fc("CommCtrl")],
+        "SECURITY-ACCESS" => vec![fc("SecurityAccess")],
+        "AUTHENTICATION" => vec![fc("Authentication")],
+        "DATA-READ" | "DATA-WRITE" => vec![fc("Ident")],
+        "DOWNLOAD" => vec![fc("StandardDataTransfer")],
+        "CONTROL-DTC-SETTING" => vec![fc("DtcSetting")],
+        "CLEAR-DTC" | "READ-DTC-INFO" => vec![fc("FaultMem")],
+        _ => vec![],
+    }
+}
+
 fn build_service(
     short_name: &str,
     semantic: &str,
     request_params: Vec<Param>,
     response_params: Vec<Param>,
 ) -> DiagService {
+    let ir_semantic = String::new();
     DiagService {
         diag_comm: DiagComm {
             short_name: short_name.to_string(),
-            semantic: semantic.to_string(),
+            long_name: service_long_name(short_name, semantic).map(|v| LongName { value: v, ti: String::new() }),
+            semantic: ir_semantic,
+            funct_classes: semantic_to_funct_classes(semantic),
+            is_executable: true,
             ..Default::default()
         },
         request: Some(Request {
@@ -615,14 +770,27 @@ fn build_service(
             sdgs: None,
         }],
         neg_responses: vec![],
+        addressing: Addressing::Physical,
+        transmission_mode: TransmissionMode::SendAndReceive,
         ..Default::default()
     }
 }
 
 fn coded_const_param(name: &str, byte_pos: u32, bit_size: u32, value: &str) -> Param {
+    let semantic = if byte_pos == 0 {
+        "SERVICE-ID".to_string()
+    } else if matches!(name,
+        "SubFunction" | "SessionType" | "ResetType" | "ControlType"
+        | "SettingType" | "SUBFUNCTION" | "SecurityAccessType"
+    ) {
+        "SUBFUNCTION".to_string()
+    } else {
+        "DATA".to_string()
+    };
     Param {
         short_name: name.to_string(),
         param_type: ParamType::CodedConst,
+        semantic,
         byte_position: Some(byte_pos),
         bit_position: Some(0),
         specific_data: Some(ParamData::CodedConst {
@@ -642,16 +810,17 @@ fn coded_const_param(name: &str, byte_pos: u32, bit_size: u32, value: &str) -> P
     }
 }
 
-fn value_param(name: &str, byte_pos: u32, bit_size: u32) -> Param {
+fn value_param(name: &str, byte_pos: u32, bit_size: u32, dop_name: &str) -> Param {
     Param {
         short_name: name.to_string(),
         param_type: ParamType::Value,
+        semantic: "DATA".to_string(),
         byte_position: Some(byte_pos),
         bit_position: Some(0),
         specific_data: Some(ParamData::Value {
             dop: Box::new(Dop {
                 dop_type: DopType::Regular,
-                short_name: format!("{name}_DOP"),
+                short_name: dop_name.to_string(),
                 specific_data: Some(DopData::NormalDop {
                     diag_coded_type: Some(DiagCodedType {
                         base_data_type: DataType::AUint32,
@@ -682,6 +851,7 @@ fn matching_request_param(name: &str, byte_pos: u32, byte_length: u32) -> Param 
     Param {
         short_name: name.to_string(),
         param_type: ParamType::MatchingRequestParam,
+        semantic: "SEMANTIC".to_string(),
         byte_position: Some(byte_pos),
         bit_position: Some(0),
         specific_data: Some(ParamData::MatchingRequestParam {
@@ -689,6 +859,94 @@ fn matching_request_param(name: &str, byte_pos: u32, byte_length: u32) -> Param 
             byte_length,
         }),
         ..Default::default()
+    }
+}
+
+/// Build subfunction-specific request and response parameters for ReadDTCInformation.
+///
+/// The parameter structure depends on the UDS subfunction:
+/// - 0x02 (ReportDTCByStatusMask): SID + SubFunction + 8 status mask bit params
+/// - 0x04 (ReportDTCSnapshotRecordByDtcNumber): SID + SubFunction + DtcCode + RecordNr
+/// - 0x06 (ReportDTCExtDataRecordByDtcNumber): SID + SubFunction + DtcCode + RecordNr
+/// - Other: SID + SubFunction (generic fallback)
+fn read_dtc_params(subfunc: u8) -> (Vec<Param>, Vec<Param>) {
+    let sf = subfunction_param_name("READ-DTC-INFO");
+    let sid_rq = coded_const_param("SID_RQ", 0, 8, "25");
+    let sid_pr = coded_const_param("SID_PR", 0, 8, "89");
+    let subfunc_rq = coded_const_param(sf, 1, 8, &subfunc.to_string());
+    let subfunc_echo = matching_request_param(sf, 1, 1);
+
+    match subfunc {
+        0x02 => {
+            // ReportDTCByStatusMask: status mask bits as individual parameters
+            let status_bit_names = [
+                "testFailed",
+                "testFailedThisOperationCycle",
+                "pendingDTC",
+                "confirmedDTC",
+                "testNotCompletedSinceLastClear",
+                "testFailedSinceLastClear",
+                "testNotCompletedThisOperationCycle",
+                "warningIndicatorRequested",
+            ];
+            let mut req = vec![sid_rq, subfunc_rq];
+            for (i, name) in status_bit_names.iter().enumerate() {
+                req.push(value_param(name, 2, 1, "TrueFalseDop"));
+                // Bit position differentiates them within the same byte
+                if let Some(p) = req.last_mut() {
+                    p.bit_position = Some(i as u32);
+                }
+            }
+            let mut resp = vec![sid_pr, subfunc_echo];
+            resp.push(value_param("DTCAndStatusRecord", 3, 0, ""));
+            for (i, name) in status_bit_names.iter().enumerate() {
+                let mut p = value_param(name, 2, 1, "TrueFalseDop");
+                p.bit_position = Some(i as u32);
+                resp.push(p);
+            }
+            (req, resp)
+        }
+        0x04 | 0x06 => {
+            // ReportDTCSnapshot/ExtData: DTC code + record number
+            let req = vec![
+                sid_rq,
+                subfunc_rq,
+                value_param("DtcCode", 2, 24, "RecordDataType"),
+                value_param("DTCSnapshotRecordNr", 5, 8, "DtcSnapshotRecordDop"),
+            ];
+            let resp = vec![
+                sid_pr,
+                subfunc_echo,
+                value_param("DTCAndStatusRecord", 2, 32, ""),
+            ];
+            (req, resp)
+        }
+        _ => {
+            // Generic fallback
+            let req = vec![sid_rq, subfunc_rq];
+            let resp = vec![sid_pr, subfunc_echo];
+            (req, resp)
+        }
+    }
+}
+
+/// Generate a standard UDS negative response.
+///
+/// CDA requires negative responses with specific parameter names:
+/// - `SID_NR` (byte 0): CodedConst 0x7F (negative response SID)
+/// - `SIDRQ_NR` (byte 1): MatchingRequestParam with semantic `SERVICEIDRQ`
+/// - `NRC` (byte 2): Value param with DOP name `NRC_{short_name}` (CDA template)
+fn standard_neg_response() -> Response {
+    let mut sidrq = matching_request_param("SIDRQ_NR", 1, 1);
+    sidrq.semantic = "SERVICEIDRQ".to_string();
+    Response {
+        response_type: ResponseType::NegResponse,
+        params: vec![
+            coded_const_param("SID_NR", 0, 8, "127"),
+            sidrq,
+            value_param("NRC", 2, 8, "NRC_{short_name}"),
+        ],
+        sdgs: None,
     }
 }
 
@@ -713,17 +971,18 @@ fn comm_control_name(subfunc: u8) -> String {
 
 fn comm_control_service(name: &str, subfunc: u8) -> DiagService {
     let pascal = to_pascal_case(name);
+    let sf = subfunction_param_name("COMMUNICATION-CONTROL");
     build_service(
         &format!("{pascal}_Control"),
         "COMMUNICATION-CONTROL",
         vec![
-            coded_const_param("SID", 0, 8, "0x28"),
-            coded_const_param("SubFunction", 1, 8, &format!("0x{subfunc:02X}")),
-            value_param("CommunicationType", 2, 8),
+            coded_const_param("SID_RQ", 0, 8, "40"),
+            coded_const_param(sf, 1, 8, &subfunc.to_string()),
+            coded_const_param("CommunicationType", 2, 8, "1"),
         ],
         vec![
-            coded_const_param("SID", 0, 8, "0x68"),
-            matching_request_param("SubFunction_Echo", 1, 1),
+            coded_const_param("SID_PR", 0, 8, "104"),
+            matching_request_param(sf, 1, 1),
         ],
     )
 }
@@ -754,11 +1013,11 @@ mod tests {
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].diag_comm.short_name, "TesterPresent");
         let req = services[0].request.as_ref().unwrap();
-        assert_eq!(req.params[0].short_name, "SID");
+        assert_eq!(req.params[0].short_name, "SID_RQ");
         if let Some(ParamData::CodedConst { coded_value, .. }) = &req.params[0].specific_data {
-            assert_eq!(coded_value, "0x3E");
+            assert_eq!(coded_value, "62");
         } else {
-            panic!("expected CodedConst for SID");
+            panic!("expected CodedConst for SID_RQ");
         }
     }
 
@@ -768,8 +1027,8 @@ mod tests {
         let generator = ServiceGenerator::new(&svc);
         let services = generator.generate_control_dtc_setting();
         assert_eq!(services.len(), 2);
-        assert_eq!(services[0].diag_comm.short_name, "ControlDTCSetting_on");
-        assert_eq!(services[1].diag_comm.short_name, "ControlDTCSetting_off");
+        assert_eq!(services[0].diag_comm.short_name, "DTC_Setting_Mode_On");
+        assert_eq!(services[1].diag_comm.short_name, "DTC_Setting_Mode_Off");
     }
 
     #[test]
@@ -780,7 +1039,7 @@ mod tests {
         assert_eq!(services.len(), 1);
         assert_eq!(
             services[0].diag_comm.short_name,
-            "ClearDiagnosticInformation"
+            "FaultMem_ClearDTCs"
         );
     }
 
@@ -790,7 +1049,10 @@ mod tests {
         let generator = ServiceGenerator::new(&svc);
         let services = generator.generate_read_dtc_information();
         assert_eq!(services.len(), 1);
-        assert_eq!(services[0].diag_comm.short_name, "ReadDTCInformation");
+        assert_eq!(
+            services[0].diag_comm.short_name,
+            "FaultMem_ReportDTCByStatusMask"
+        );
     }
 
     #[test]
@@ -900,7 +1162,7 @@ mod tests {
         // Verify seed subfunc byte
         let req = services[0].request.as_ref().unwrap();
         if let Some(ParamData::CodedConst { coded_value, .. }) = &req.params[1].specific_data {
-            assert_eq!(coded_value, "0x01");
+            assert_eq!(coded_value, "1");
         } else {
             panic!("expected CodedConst for subfunc");
         }
@@ -972,7 +1234,7 @@ mod tests {
         // Verify SID
         let req = services[0].request.as_ref().unwrap();
         if let Some(ParamData::CodedConst { coded_value, .. }) = &req.params[0].specific_data {
-            assert_eq!(coded_value, "0x29");
+            assert_eq!(coded_value, "41");
         }
     }
 
@@ -1012,7 +1274,7 @@ mod tests {
         // Verify SID
         let req = services[0].request.as_ref().unwrap();
         if let Some(ParamData::CodedConst { coded_value, .. }) = &req.params[0].specific_data {
-            assert_eq!(coded_value, "0x28");
+            assert_eq!(coded_value, "40");
         }
     }
 
@@ -1069,9 +1331,9 @@ mod tests {
                 );
             }
         };
-        check_sid(&services[0], "0x34");
-        check_sid(&services[1], "0x36");
-        check_sid(&services[2], "0x37");
+        check_sid(&services[0], "52");
+        check_sid(&services[1], "54");
+        check_sid(&services[2], "55");
     }
 
     #[test]

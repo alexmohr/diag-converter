@@ -7,7 +7,7 @@ use crate::service_extractor;
 use crate::yaml_model::*;
 use diag_ir::*;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, thiserror::Error)]
 pub enum YamlWriteError {
@@ -81,7 +81,7 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
 
     if let Some(layer) = layer {
         for svc in &layer.diag_services {
-            if svc.diag_comm.semantic == "ROUTINE" {
+            if svc.diag_comm.short_name.starts_with("Routine_") || extract_sid_value(svc) == Some(0x31) {
                 let rid = extract_routine_id(svc);
                 let routine = service_to_routine(svc);
                 let key = serde_yaml::Value::Number(serde_yaml::Number::from(rid as u64));
@@ -104,8 +104,18 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
 
                 let access_name = extract_access_pattern_name(&svc.diag_comm);
                 let (snap, ioc) = extract_did_extra(svc);
+                let data_param_name = svc.pos_responses.first().and_then(|resp| {
+                    resp.params
+                        .iter()
+                        .find(|p| p.param_type == ParamType::Value)
+                        .map(|p| p.short_name.as_str())
+                });
+                let param_name = data_param_name
+                    .filter(|&pn| pn != did_name)
+                    .map(|pn| pn.to_string());
                 let did = Did {
                     name: did_name.to_string(),
+                    param_name,
                     description: svc.diag_comm.long_name.as_ref().map(|ln| ln.value.clone()),
                     did_type: did_type_val,
                     access: if access_name.is_empty() {
@@ -241,11 +251,21 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
     }
 }
 
+fn extract_sid_value(svc: &DiagService) -> Option<u8> {
+    let req = svc.request.as_ref()?;
+    let param = req.params.iter().find(|p| p.short_name == "SID_RQ")?;
+    if let Some(ParamData::CodedConst { coded_value, .. }) = &param.specific_data {
+        Some(parse_coded_value(coded_value) as u8)
+    } else {
+        None
+    }
+}
+
 /// Extract the DID ID from the request's coded const param.
 fn extract_did_id(svc: &DiagService) -> u32 {
     if let Some(req) = &svc.request {
         for param in &req.params {
-            if param.short_name == "DID" {
+            if param.short_name == "DID_RQ" {
                 if let Some(ParamData::CodedConst { coded_value, .. }) = &param.specific_data {
                     return parse_coded_value(coded_value);
                 }
@@ -259,7 +279,7 @@ fn extract_did_id(svc: &DiagService) -> u32 {
 fn extract_routine_id(svc: &DiagService) -> u32 {
     if let Some(req) = &svc.request {
         for param in &req.params {
-            if param.short_name == "RID" {
+            if param.short_name == "RID_RQ" {
                 if let Some(ParamData::CodedConst { coded_value, .. }) = &param.specific_data {
                     return parse_coded_value(coded_value);
                 }
@@ -300,6 +320,7 @@ fn extract_did_type(
                 {
                     let mut yaml_type = YamlType {
                         base: String::new(),
+                        dop_name: None,
                         endian: None,
                         bit_length: None,
                         length: None,
@@ -774,12 +795,20 @@ fn extract_access_patterns(variant: &Variant) -> Option<BTreeMap<String, AccessP
         let mut auth_names: Vec<String> = Vec::new();
 
         for pcsr in refs {
+            // Convert CDA state name back to YAML key via state.long_name.ti
+            let yaml_key = pcsr
+                .state
+                .as_ref()
+                .and_then(|s| s.long_name.as_ref())
+                .filter(|ln| !ln.ti.is_empty())
+                .map_or_else(
+                    || pcsr.in_param_path_short_name.to_lowercase(),
+                    |ln| ln.ti.clone(),
+                );
             match pcsr.value.as_str() {
-                "SessionStates" => session_names.push(pcsr.in_param_path_short_name.clone()),
-                "SecurityAccessStates" => {
-                    security_names.push(pcsr.in_param_path_short_name.clone());
-                }
-                "AuthenticationStates" => auth_names.push(pcsr.in_param_path_short_name.clone()),
+                "Session" => session_names.push(yaml_key),
+                "SecurityAccess" => security_names.push(yaml_key),
+                "Authentication" => auth_names.push(yaml_key),
                 _ => {}
             }
         }
@@ -947,35 +976,45 @@ fn ir_job_to_yaml(job: &SingleEcuJob) -> EcuJob {
     }
 }
 
-/// Extract sessions from a "SessionStates" state chart (semantic = "SESSION").
+/// Extract sessions from a "Session" state chart.
+/// State short_name is the CDA name (CamelCase), long_name.ti is the YAML key (lowercase).
 fn extract_sessions_from_state_charts(
     state_charts: &[StateChart],
 ) -> Option<BTreeMap<String, Session>> {
-    let sc = state_charts.iter().find(|sc| sc.semantic == "SESSION")?;
+    let sc = state_charts.iter().find(|sc| sc.short_name == "Session")?;
     if sc.states.is_empty() {
         return None;
     }
     let mut sessions = BTreeMap::new();
     for state in &sc.states {
-        let (id_val, alias) = if let Some(ln) = &state.long_name {
+        let (id_val, yaml_key, alias) = if let Some(ln) = &state.long_name {
             let id: u64 = ln.value.parse().unwrap_or(0);
-            let alias = if ln.ti.is_empty() {
-                None
+            // long_name.ti stores the YAML key; short_name is the CDA alias
+            let yaml_key = if ln.ti.is_empty() {
+                state.short_name.to_lowercase()
             } else {
-                Some(ln.ti.clone())
+                ln.ti.clone()
+            };
+            // Only output alias if it differs from trivial capitalization of the key
+            let alias = if state.short_name != crate::parser::capitalize_first(&yaml_key) {
+                Some(state.short_name.clone())
+            } else {
+                None
             };
             (
                 serde_yaml::Value::Number(serde_yaml::Number::from(id)),
+                yaml_key,
                 alias,
             )
         } else {
             (
                 serde_yaml::Value::Number(serde_yaml::Number::from(0u64)),
+                state.short_name.to_lowercase(),
                 None,
             )
         };
         sessions.insert(
-            state.short_name.clone(),
+            yaml_key,
             Session {
                 id: id_val,
                 alias,
@@ -987,11 +1026,31 @@ fn extract_sessions_from_state_charts(
     Some(sessions)
 }
 
-/// Extract state_model from a "SessionStates" state chart (transitions + start state).
+/// Extract state_model from a "Session" state chart (transitions + start state).
+/// CDA names are mapped back to YAML keys via long_name.ti.
 fn extract_state_model_from_state_charts(state_charts: &[StateChart]) -> Option<StateModel> {
-    let sc = state_charts.iter().find(|sc| sc.semantic == "SESSION")?;
-    let has_start =
-        !sc.start_state_short_name_ref.is_empty() && sc.start_state_short_name_ref != "default";
+    let sc = state_charts.iter().find(|sc| sc.short_name == "Session")?;
+
+    // Build CDA name → YAML key mapping
+    let cda_to_yaml: HashMap<&str, String> = sc
+        .states
+        .iter()
+        .map(|s| {
+            let yaml_key = s
+                .long_name
+                .as_ref()
+                .filter(|ln| !ln.ti.is_empty())
+                .map_or_else(|| s.short_name.to_lowercase(), |ln| ln.ti.clone());
+            (s.short_name.as_str(), yaml_key)
+        })
+        .collect();
+
+    let start_yaml = cda_to_yaml
+        .get(sc.start_state_short_name_ref.as_str())
+        .cloned()
+        .unwrap_or_else(|| sc.start_state_short_name_ref.to_lowercase());
+
+    let has_start = !start_yaml.is_empty() && start_yaml != "default";
     let has_transitions = !sc.state_transitions.is_empty();
     if !has_start && !has_transitions {
         return None;
@@ -999,7 +1058,7 @@ fn extract_state_model_from_state_charts(state_charts: &[StateChart]) -> Option<
 
     let initial_state = if has_start {
         Some(StateModelState {
-            session: sc.start_state_short_name_ref.clone(),
+            session: start_yaml,
             security: None,
             authentication_role: None,
         })
@@ -1010,10 +1069,15 @@ fn extract_state_model_from_state_charts(state_charts: &[StateChart]) -> Option<
     let session_transitions = if has_transitions {
         let mut trans_map: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for t in &sc.state_transitions {
-            trans_map
-                .entry(t.source_short_name_ref.clone())
-                .or_default()
-                .push(t.target_short_name_ref.clone());
+            let from = cda_to_yaml
+                .get(t.source_short_name_ref.as_str())
+                .cloned()
+                .unwrap_or_else(|| t.source_short_name_ref.to_lowercase());
+            let to = cda_to_yaml
+                .get(t.target_short_name_ref.as_str())
+                .cloned()
+                .unwrap_or_else(|| t.target_short_name_ref.to_lowercase());
+            trans_map.entry(from).or_default().push(to);
         }
         Some(trans_map)
     } else {
@@ -1029,23 +1093,34 @@ fn extract_state_model_from_state_charts(state_charts: &[StateChart]) -> Option<
     })
 }
 
-/// Extract security levels from a "SecurityAccessStates" state chart (semantic = "SECURITY").
+/// Extract security levels from a "SecurityAccess" state chart.
+/// Skips the synthetic "Locked" state. Uses long_name.ti as the YAML key.
 fn extract_security_from_state_charts(
     state_charts: &[StateChart],
 ) -> Option<BTreeMap<String, SecurityLevel>> {
-    let sc = state_charts.iter().find(|sc| sc.semantic == "SECURITY")?;
+    let sc = state_charts.iter().find(|sc| sc.short_name == "SecurityAccess")?;
     if sc.states.is_empty() {
         return None;
     }
     let mut levels = BTreeMap::new();
     for state in &sc.states {
+        // Skip the synthetic Locked state
+        if state.short_name == "Locked" {
+            continue;
+        }
         let level_num = state
             .long_name
             .as_ref()
             .and_then(|ln| ln.value.parse::<u32>().ok())
             .unwrap_or(0);
+        // Use long_name.ti as YAML key (original key), falling back to short_name
+        let yaml_key = state
+            .long_name
+            .as_ref()
+            .filter(|ln| !ln.ti.is_empty())
+            .map_or_else(|| state.short_name.clone(), |ln| ln.ti.clone());
         levels.insert(
-            state.short_name.clone(),
+            yaml_key,
             SecurityLevel {
                 level: level_num,
                 seed_request: serde_yaml::Value::Null,
@@ -1139,7 +1214,7 @@ fn extract_value_param_bit_length(params: &[Param], param_name: &str) -> Option<
 fn extract_authentication_from_state_charts(state_charts: &[StateChart]) -> Option<Authentication> {
     let sc = state_charts
         .iter()
-        .find(|sc| sc.semantic == "AUTHENTICATION")?;
+        .find(|sc| sc.short_name == "Authentication")?;
     if sc.states.is_empty() {
         return None;
     }
@@ -1173,11 +1248,23 @@ fn extract_variants(db: &DiagDatabase) -> Option<Variants> {
         return None;
     }
 
+    let base_prefix = db
+        .variants
+        .iter()
+        .find(|v| v.is_base_variant)
+        .map(|v| format!("{}_", v.diag_layer.short_name))
+        .unwrap_or_default();
+
     let mut detection_order = Vec::new();
     let mut definitions = BTreeMap::new();
 
     for variant in &non_base {
-        let name = variant.diag_layer.short_name.clone();
+        let name = variant
+            .diag_layer
+            .short_name
+            .strip_prefix(&base_prefix)
+            .unwrap_or(&variant.diag_layer.short_name)
+            .to_string();
         detection_order.push(name.clone());
 
         let detect = variant

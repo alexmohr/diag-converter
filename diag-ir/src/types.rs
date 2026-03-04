@@ -943,8 +943,8 @@ pub enum ResponseType {
 /// Maps to FBS Addressing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Addressing {
-    #[default]
     Functional,
+    #[default]
     Physical,
     FunctionalOrPhysical,
 }
@@ -952,9 +952,9 @@ pub enum Addressing {
 /// Maps to FBS TransmissionMode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TransmissionMode {
-    #[default]
     SendOnly,
     ReceiveOnly,
+    #[default]
     SendAndReceive,
     SendOrReceive,
 }

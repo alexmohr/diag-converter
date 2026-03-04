@@ -194,12 +194,14 @@ types:
 
   # VIN type: 17-byte ASCII string
   vin_17byte:
+    dop_name: "VIN_17Byte"
     base: ascii
     length: 17
     encoding: "ISO-8859-1"
 
   # Session enum type
   session_type:
+    dop_name: "EcuSessionType"
     base: u8
     entries:
       - value: 0x01
@@ -227,6 +229,7 @@ dids:
   # Source: shared.py - add_vin_service()
   0xF190:
     name: "VINDataIdentifier"
+    param_name: "VIN"
     description: "Vehicle Identification Number"
     type: vin_17byte
     access: public_read
@@ -237,6 +240,7 @@ dids:
   # Source: shared.py - add_session_type_service()
   0xF186:
     name: "ActiveDiagnosticSessionDataIdentifier"
+    param_name: "EcuSessionType"
     description: "Currently active diagnostic session"
     type: session_type
     access: public_read
@@ -317,6 +321,8 @@ functional_classes:
   - StandardDataTransfer
   - SecurityAccess
   - Authentication
+  - DtcSetting
+  - FaultMem
 
 # -----------------------------------------------------------------------------
 # SERVICES
@@ -408,5 +414,52 @@ services:
     enabled: true
     temporal_sync: true
 
+  # 0x85 - ControlDTCSetting
+  # Source: dtc_setting.py - add_dtc_setting_services()
+  controlDTCSetting:
+    enabled: true
+    subfunctions:
+      on: 0x01
+      off: 0x02
+      timeTravelDTCsOn: 0x42
+
+  # 0x14 - ClearDiagnosticInformation
+  # Source: faultmemory.py - add_clear_dtc_service()
+  clearDiagnosticInformation:
+    enabled: true
+
+  # 0x19 - ReadDTCInformation
+  # Source: faultmemory.py - add_read_dtc_services()
+  readDTCInformation:
+    enabled: true
+    subfunctions:
+      reportDTCByStatusMask: 0x02
+      reportDTCSnapshotRecordByDtcNumber: 0x04
+      reportDTCExtDataRecordByDtcNumber: 0x06
+
   testerPresent:
     enabled: false
+
+# -----------------------------------------------------------------------------
+# DTCs - Diagnostic Trouble Codes
+# Based on: dtc.py - add_dtcs()
+# -----------------------------------------------------------------------------
+dtcs:
+  0x1E240:
+    name: Code1
+    description: "DTC Code 1"
+  0x39447:
+    name: Code2
+    description: "DTC Code 2"
+  0x1E241:
+    name: Code3
+    description: "DTC Code 3"
+  0x1E242:
+    name: Code4
+    description: "DTC Code 4"
+  0x1E243:
+    name: Code5
+    description: "DTC Code 5"
+  0x1E244:
+    name: Code6
+    description: "DTC Code 6"

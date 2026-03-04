@@ -443,9 +443,22 @@ fn compare_odx_vs_reference_mdd(pdx: &[u8], ref_mdd: &[u8], name: &str) {
     }
 
     // Non-base variants: compare variant-specific services.
-    // ODX parser flattens inherited services (from PARENT-REF) onto ECU variants,
-    // so we subtract base variant services to get variant-specific ones.
+    // Both the ODX parser and the CDA reference may flatten inherited services
+    // onto ECU variants, so we subtract base variant services from both sides
+    // to compare only variant-specific additions.
     let odx_base_svc: BTreeSet<_> = odx_ir
+        .variants
+        .iter()
+        .find(|v| v.is_base_variant)
+        .map(|v| {
+            v.diag_layer
+                .diag_services
+                .iter()
+                .map(|s| s.diag_comm.short_name.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let ref_base_svc: BTreeSet<_> = ref_ir
         .variants
         .iter()
         .find(|v| v.is_base_variant)
@@ -482,6 +495,7 @@ fn compare_odx_vs_reference_mdd(pdx: &[u8], ref_mdd: &[u8], name: &str) {
             .diag_services
             .iter()
             .map(|s| s.diag_comm.short_name.as_str())
+            .filter(|n| !ref_base_svc.contains(n))
             .collect();
         assert_eq!(
             odx_variant_svc,

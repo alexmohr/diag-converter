@@ -484,6 +484,9 @@ pub struct AccessPattern {
 pub struct YamlType {
     #[serde(default)]
     pub base: String,
+    /// CDA-compatible DOP name. When set, overrides automatic DOP name derivation.
+    #[serde(default)]
+    pub dop_name: Option<String>,
     #[serde(default)]
     pub endian: Option<String>,
     #[serde(default)]
@@ -540,6 +543,9 @@ pub struct TypeConstraints {
 pub struct Did {
     #[serde(default)]
     pub name: String,
+    /// CDA-compatible data parameter name (defaults to `name` if not specified).
+    #[serde(default)]
+    pub param_name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(rename = "type")]
