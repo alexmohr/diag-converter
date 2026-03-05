@@ -139,6 +139,27 @@ pub struct YamlAudience {
     pub groups: Vec<String>,
 }
 
+/// Per-service audience flags (OCX extension).
+///
+/// Used on DIDs, routines, ECU jobs, and service entries to indicate which
+/// audiences a particular diagnostic service targets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YamlServiceAudience {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplier: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manufacturing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sales: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_market: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+}
+
 // --- SDGs ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -450,8 +471,8 @@ pub struct ServiceEntry {
     pub subfunctions: Option<serde_yaml::Value>,
     #[serde(default)]
     pub state_effects: Option<serde_yaml::Value>,
-    #[serde(default)]
-    pub audience: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<YamlServiceAudience>,
     #[serde(default)]
     pub response_outputs: Option<serde_yaml::Value>,
     #[serde(default)]
@@ -511,8 +532,8 @@ pub struct CustomService {
     pub negative_responses: Option<Vec<serde_yaml::Value>>,
     #[serde(default)]
     pub access: Option<String>,
-    #[serde(default)]
-    pub audience: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<YamlServiceAudience>,
 }
 
 // --- Access Patterns ---
@@ -613,8 +634,8 @@ pub struct Did {
     pub io_control: Option<serde_yaml::Value>,
     #[serde(default)]
     pub annotations: Option<serde_yaml::Value>,
-    #[serde(default)]
-    pub audience: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<YamlServiceAudience>,
 }
 
 // --- Routines ---
@@ -631,8 +652,8 @@ pub struct Routine {
     pub operations: Vec<String>,
     #[serde(default)]
     pub parameters: Option<BTreeMap<String, RoutinePhase>>,
-    #[serde(default)]
-    pub audience: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<YamlServiceAudience>,
     #[serde(default)]
     pub annotations: Option<serde_yaml::Value>,
 }
@@ -707,8 +728,8 @@ pub struct EcuJob {
     pub neg_output_params: Option<Vec<JobParamDef>>,
     #[serde(default)]
     pub access: Option<String>,
-    #[serde(default)]
-    pub audience: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<YamlServiceAudience>,
     #[serde(default)]
     pub annotations: Option<serde_yaml::Value>,
 }

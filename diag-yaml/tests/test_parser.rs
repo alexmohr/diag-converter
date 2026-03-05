@@ -267,3 +267,50 @@ comparams:
     assert!(unique[0].complex_value.is_some());
     assert_eq!(unique[0].complex_value.as_ref().unwrap().entries.len(), 3);
 }
+
+#[test]
+fn test_parse_did_audience() {
+    let yaml = r#"
+schema: "opensovd.cda.diagdesc/v1"
+meta:
+  author: "Test"
+  domain: "Test"
+  created: "2026-01-01"
+  revision: "0.1.0"
+  description: "Audience test"
+ecu:
+  id: "TST"
+  name: "TestECU"
+types:
+  u8_ident:
+    base: u8
+dids:
+  0xF198:
+    name: "RepairShopCode"
+    param_name: "RepairShopCodeOrTesterSerialNumber"
+    description: "Repair shop code"
+    type: u8_ident
+    access: public
+    readable: true
+    writable: false
+    audience:
+      afterSales: true
+      development: true
+"#;
+    let db = parse_yaml(yaml).unwrap();
+    let services = &db.variants[0].diag_layer.diag_services;
+    let read_svc = services
+        .iter()
+        .find(|s| s.diag_comm.short_name == "RepairShopCode_Read")
+        .expect("should have RepairShopCode_Read service");
+    let audience = read_svc
+        .diag_comm
+        .audience
+        .as_ref()
+        .expect("service should have audience");
+    assert!(audience.is_after_sales);
+    assert!(audience.is_development);
+    assert!(!audience.is_manufacturing);
+    assert!(!audience.is_supplier);
+    assert!(!audience.is_after_market);
+}

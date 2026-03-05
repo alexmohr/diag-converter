@@ -25,6 +25,26 @@ fn canonical_json(val: &serde_yaml::Value) -> String {
     serde_json::to_string(&json_val).unwrap_or_default()
 }
 
+/// Convert a per-service YAML audience to the IR Audience type.
+fn yaml_service_audience_to_ir(a: &YamlServiceAudience) -> Audience {
+    let mut enabled = Vec::new();
+    for g in &a.groups {
+        enabled.push(AdditionalAudience {
+            short_name: g.clone(),
+            long_name: None,
+        });
+    }
+    Audience {
+        enabled_audiences: enabled,
+        disabled_audiences: vec![],
+        is_supplier: a.supplier.unwrap_or(false),
+        is_development: a.development.unwrap_or(false),
+        is_manufacturing: a.manufacturing.unwrap_or(false),
+        is_after_sales: a.after_sales.unwrap_or(false),
+        is_after_market: a.after_market.unwrap_or(false),
+    }
+}
+
 /// Parse a YAML string into a DiagDatabase IR.
 pub fn parse_yaml(yaml: &str) -> Result<DiagDatabase, YamlParseError> {
     let doc: YamlDocument = serde_yaml::from_str(yaml)?;
@@ -611,7 +631,7 @@ fn did_to_read_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> DiagS
             pre_condition_state_refs: vec![],
             state_transition_refs: vec![],
             protocols: vec![],
-            audience: None,
+            audience: did.audience.as_ref().map(yaml_service_audience_to_ir),
             is_mandatory: false,
             is_executable: true,
             is_final: false,
@@ -737,7 +757,7 @@ fn did_to_write_service(did_id: u32, did: &Did, registry: &TypeRegistry) -> Diag
             pre_condition_state_refs: vec![],
             state_transition_refs: vec![],
             protocols: vec![],
-            audience: None,
+            audience: did.audience.as_ref().map(yaml_service_audience_to_ir),
             is_mandatory: false,
             is_executable: true,
             is_final: false,
@@ -961,7 +981,7 @@ fn routine_to_service(rid: u32, routine: &Routine, _registry: &TypeRegistry) -> 
             pre_condition_state_refs: vec![],
             state_transition_refs: vec![],
             protocols: vec![],
-            audience: None,
+            audience: routine.audience.as_ref().map(yaml_service_audience_to_ir),
             is_mandatory: false,
             is_executable: true,
             is_final: false,
@@ -1027,7 +1047,7 @@ fn ecu_job_to_ir(job: &EcuJob, _registry: &TypeRegistry) -> SingleEcuJob {
             pre_condition_state_refs: vec![],
             state_transition_refs: vec![],
             protocols: vec![],
-            audience: None,
+            audience: job.audience.as_ref().map(yaml_service_audience_to_ir),
             is_mandatory: false,
             is_executable: true,
             is_final: false,

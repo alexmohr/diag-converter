@@ -938,3 +938,52 @@ fn test_yaml_roundtrip_preserves_variant_services() {
         );
     }
 }
+#[test]
+fn test_yaml_roundtrip_preserves_audience() {
+    let yaml = r#"
+schema: "opensovd.cda.diagdesc/v1"
+ecu:
+  name: "TEST"
+types:
+  u8_ident:
+    base: u8
+dids:
+  0xF198:
+    name: RepairShopCode
+    description: "Repair shop code"
+    type: u8_ident
+    access: public
+    readable: true
+    writable: false
+    audience:
+      afterSales: true
+      development: true
+"#;
+    let db = parse_yaml(yaml).unwrap();
+    let yaml_out = write_yaml(&db).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&yaml_out).unwrap();
+    let did = &doc["dids"][0xF198];
+    assert!(
+        did["audience"].is_mapping(),
+        "audience should be present in YAML output: got {did:?}"
+    );
+    assert_eq!(
+        did["audience"]["afterSales"].as_bool(),
+        Some(true),
+        "afterSales should be true"
+    );
+    assert_eq!(
+        did["audience"]["development"].as_bool(),
+        Some(true),
+        "development should be true"
+    );
+    // Fields not set should be absent
+    assert!(
+        did["audience"]["manufacturing"].is_null(),
+        "manufacturing should not be present"
+    );
+    assert!(
+        did["audience"]["supplier"].is_null(),
+        "supplier should not be present"
+    );
+}

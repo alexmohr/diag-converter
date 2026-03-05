@@ -22,6 +22,36 @@ pub fn write_yaml(db: &DiagDatabase) -> Result<String, YamlWriteError> {
     Ok(yaml)
 }
 
+/// Convert an IR Audience to the per-service YAML audience struct.
+/// Returns `None` if all flags are false and there are no groups.
+fn ir_audience_to_yaml(a: &Audience) -> Option<YamlServiceAudience> {
+    let has_any = a.is_supplier
+        || a.is_development
+        || a.is_manufacturing
+        || a.is_after_sales
+        || a.is_after_market
+        || !a.enabled_audiences.is_empty();
+    if !has_any {
+        return None;
+    }
+    Some(YamlServiceAudience {
+        supplier: if a.is_supplier { Some(true) } else { None },
+        development: if a.is_development { Some(true) } else { None },
+        manufacturing: if a.is_manufacturing {
+            Some(true)
+        } else {
+            None
+        },
+        after_sales: if a.is_after_sales { Some(true) } else { None },
+        after_market: if a.is_after_market { Some(true) } else { None },
+        groups: a
+            .enabled_audiences
+            .iter()
+            .map(|aa| aa.short_name.clone())
+            .collect(),
+    })
+}
+
 /// Transform the canonical IR into a YAML document model.
 fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
     let base_variant = db
@@ -130,7 +160,11 @@ fn ir_to_yaml(db: &DiagDatabase) -> YamlDocument {
                     snapshot: snap,
                     io_control: ioc,
                     annotations: None,
-                    audience: None,
+                    audience: svc
+                        .diag_comm
+                        .audience
+                        .as_ref()
+                        .and_then(ir_audience_to_yaml),
                 };
 
                 let key = serde_yaml::Value::Number(serde_yaml::Number::from(did_id as u64));
@@ -884,7 +918,11 @@ fn service_to_routine(svc: &DiagService) -> Routine {
         },
         operations,
         parameters: None, // Simplified - could reconstruct from params
-        audience: None,
+        audience: svc
+            .diag_comm
+            .audience
+            .as_ref()
+            .and_then(ir_audience_to_yaml),
         annotations: None,
     }
 }
@@ -988,7 +1026,11 @@ fn ir_job_to_yaml(job: &SingleEcuJob) -> EcuJob {
         output_params: convert_params(&job.output_params),
         neg_output_params: convert_params(&job.neg_output_params),
         access: None,
-        audience: None,
+        audience: job
+            .diag_comm
+            .audience
+            .as_ref()
+            .and_then(ir_audience_to_yaml),
         annotations: None,
     }
 }
